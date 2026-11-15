@@ -29,7 +29,7 @@ It opens straight into the generator. Data goes in `data/`.
    - 3 private subnets in 3 AZs, with a NAT gateway
    - the network range users connect from, plus optionally a second one (for example the VPN client pool: the address `ipconfig` shows while on the VPN)
    - the code bucket and key
-   - an existing bucket. The app never creates buckets and only writes under `mock-data/` (S3 datasets), `tables/` (Glue table files, in the Glue database `mock_data`), `dependencies/` (database registry) and `staging/` (temporary Redshift files)
+   - an existing bucket. The app never creates buckets and only writes under `mock-data/` (S3 datasets), `mock-tables/` (Glue table files, in the Glue database `mock_data`), `dependencies/` (database registry) and `staging/` (temporary Redshift files)
    - optionally, an ACM certificate for HTTPS
 4. On the last page, acknowledge that the stack creates IAM resources with custom names.
 5. Open the `AppUrl` output from inside your network, using `http://` unless you set a certificate.

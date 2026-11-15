@@ -36,7 +36,7 @@ RDS → Subnet groups → Create. Name it `dq-poc-mock-data-subnets`, then pick 
 The app uses the existing bucket `vgi-cdao-data-quality-poc`, so there's nothing to create. It never creates or deletes buckets. It only writes under four prefixes, and the IAM policy below limits it to them:
 
 - `mock-data/`: S3 datasets. The prefix you enter is the dataset (`mock-data/<prefix>/part-00000.<format>`).
-- `tables/`: the files behind Glue tables (`tables/<table>/`). Every Glue table goes in the Glue database `mock_data`, which the app creates on first use if it doesn't exist.
+- `mock-tables/`: the files behind Glue tables (`mock-tables/<table>/`). Every Glue table goes in the Glue database `mock_data`, which the app creates on first use if it doesn't exist.
 - `dependencies/DB/<name>.json`: one file per Postgres/Redshift database, holding its status, endpoint and credentials. The bucket's default encryption (SSE-S3) encrypts them at rest.
 - `staging/`: Redshift `COPY` files, deleted after each load.
 
@@ -129,7 +129,7 @@ IAM → Roles → Create role:
       ],
       "Resource": [
         "arn:aws:s3:::vgi-cdao-data-quality-poc/mock-data/*",
-        "arn:aws:s3:::vgi-cdao-data-quality-poc/tables/*",
+        "arn:aws:s3:::vgi-cdao-data-quality-poc/mock-tables/*",
         "arn:aws:s3:::vgi-cdao-data-quality-poc/dependencies/*",
         "arn:aws:s3:::vgi-cdao-data-quality-poc/staging/*"
       ]

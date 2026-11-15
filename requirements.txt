@@ -12,6 +12,7 @@ python-dateutil==2.9.0.post0
 
 # Transitive dependencies, pinned for repeatable builds
 typing_extensions==4.16.0
-scramp==1.5.0
+# Kept below 1.5: 1.5.0 removed make_channel_binding, which pg8000 1.31.2 calls on SSL connections
+scramp==1.4.18
 asn1crypto==1.5.1
 six==1.17.0

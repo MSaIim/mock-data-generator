@@ -25,7 +25,7 @@ REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
 # The app only writes under these prefixes of the app bucket (no other buckets)
 STAGING_PREFIX = "staging/"
 DATA_PREFIX = "mock-data/"
-TABLES_PREFIX = "tables/"
+TABLES_PREFIX = "mock-tables/"
 S3_ROOT = f"s3://{APP_BUCKET}/{DATA_PREFIX}"
 GLUE_ROOT = f"s3://{APP_BUCKET}/{TABLES_PREFIX}"
 
@@ -237,7 +237,7 @@ def recreate_sql(dest: dict, columns: list) -> list:
 # Folder of a dataset inside the app bucket
 def dataset_folder(dest: dict) -> str:
     """
-    Build the key prefix of a dataset: mock-data/<prefix>/ for S3, tables/<table>/ for Glue.
+    Build the key prefix of a dataset: mock-data/<prefix>/ for S3, mock-tables/<table>/ for Glue.
 
     Arguments:
         dest (dict): validated destination
@@ -348,7 +348,8 @@ def require_app_table(name: str) -> None:
 # Every DynamoDB table this app created
 def app_tables() -> list:
     """
-    List the tagged DynamoDB tables with their descriptions.
+    List the tagged DynamoDB tables with their descriptions. Tables the app isn't allowed to inspect
+    (or that disappear while listing) are skipped: the app can't have created them.
 
     Returns:
         list: DescribeTable "Table" dicts
@@ -356,8 +357,14 @@ def app_tables() -> list:
     tables = []
     for page in dynamo.get_paginator("list_tables").paginate():
         for name in page["TableNames"]:
-            table = dynamo.describe_table(TableName=name)["Table"]
-            if APP_TAG in dynamo.list_tags_of_resource(ResourceArn=table["TableArn"]).get("Tags", []):
+            try:
+                table = dynamo.describe_table(TableName=name)["Table"]
+                tags = dynamo.list_tags_of_resource(ResourceArn=table["TableArn"]).get("Tags", [])
+            except ClientError as e:
+                if e.response["Error"]["Code"] in ("AccessDeniedException", "ResourceNotFoundException"):
+                    continue
+                raise
+            if APP_TAG in tags:
                 tables.append(table)
     return tables
 
@@ -462,7 +469,7 @@ def write(dest: dict, columns: list, batches) -> dict:
         folder, parts = write_dataset(dest, columns, batches, False)
         return {"type": "s3", "uri": f"s3://{APP_BUCKET}/{folder}", "format": dest["format"], "part_files": parts, "region": REGION}
 
-    # Glue: part files under tables/ plus a catalog table over them (Athena-readable)
+    # Glue: part files under mock-tables/ plus a catalog table over them (Athena-readable)
     database = GLUE_DATABASE
     folder, parts = write_dataset(dest, columns, batches, True)
     location = f"s3://{APP_BUCKET}/{folder}"
@@ -592,7 +599,7 @@ def delete_table(dest: dict) -> None:
         delete_dataset(APP_BUCKET, dataset_folder(dest))
     elif source == "glue":
         location = glue.get_table(DatabaseName=GLUE_DATABASE, Name=dest["table"])["Table"]["StorageDescriptor"]["Location"]
-        # Only delete files under the app bucket's tables/ prefix
+        # Only delete files under the app bucket's mock-tables/ prefix
         if location.startswith(GLUE_ROOT):
             delete_dataset(APP_BUCKET, location[len(f"s3://{APP_BUCKET}/") :])
         glue.delete_table(DatabaseName=GLUE_DATABASE, Name=dest["table"])

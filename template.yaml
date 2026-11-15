@@ -33,7 +33,7 @@ Parameters:
     Description: S3 key of the code zip
   AppBucket:
     Type: String
-    Description: Existing S3 bucket. The app only uses mock-data/ (S3 datasets), tables/ (Glue table files), dependencies/ (database registry) and staging/ (Redshift COPY files)
+    Description: Existing S3 bucket. The app only uses mock-data/ (S3 datasets), mock-tables/ (Glue table files), dependencies/ (database registry) and staging/ (Redshift COPY files)
   CertificateArn:
     Type: String
     Default: ""
@@ -168,7 +168,7 @@ Resources:
                 Action: dynamodb:ListTables
                 Resource: "*"
               # App bucket: list it, and read/write only under its four prefixes (no bucket creation or deletion)
-              #   mock-data/ S3 datasets, tables/ Glue table files, dependencies/ database registry,
+              #   mock-data/ S3 datasets, mock-tables/ Glue table files, dependencies/ database registry,
               #   staging/ Redshift COPY files (read by Redshift with this same role)
               - Effect: Allow
                 Action: s3:ListBucket
@@ -177,7 +177,7 @@ Resources:
                 Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
                 Resource:
                   - !Sub "arn:aws:s3:::${AppBucket}/mock-data/*"
-                  - !Sub "arn:aws:s3:::${AppBucket}/tables/*"
+                  - !Sub "arn:aws:s3:::${AppBucket}/mock-tables/*"
                   - !Sub "arn:aws:s3:::${AppBucket}/dependencies/*"
                   - !Sub "arn:aws:s3:::${AppBucket}/staging/*"
               # Glue: only the mock_data database and its tables (created on first use)

@@ -188,7 +188,7 @@ def check_destination(body: dict, need_table: bool, need_format: bool) -> dict:
 
     Returns:
         dict: source plus the applicable fields: db + database + schema (SQL), prefix (s3), format (s3/glue), table (not s3).
-              S3 data always goes under mock-data/ and Glue tables under tables/ in the app bucket
+              S3 data always goes under mock-data/ and Glue tables under mock-tables/ in the app bucket
     """
     source = body.get("source")
     if source not in SOURCES:

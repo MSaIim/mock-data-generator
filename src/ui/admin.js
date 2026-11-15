@@ -43,11 +43,13 @@ async function loadDatabases() {
       );
       row.classList.add("expandable");
 
-      // Hidden details row under it, filled when expanded
+      // Hidden details row under it, filled when expanded (inside a bordered box so it reads as part of this row)
       const detail = el("tr", "db-detail");
-      const cell = el("td");
-      cell.colSpan = 4;
-      detail.appendChild(cell);
+      const td = el("td");
+      td.colSpan = 4;
+      const cell = el("div", "db-detail-box");
+      td.appendChild(cell);
+      detail.appendChild(td);
       detail.hidden = true;
 
       // Clicking the row (not its buttons) toggles the details

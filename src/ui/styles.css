@@ -875,6 +875,21 @@ label {
   min-width: 0;
 }
 
+/* "Click to reveal": plain link-style text, same size and baseline as the other values */
+.reveal {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  line-height: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.reveal:hover {
+  text-decoration: underline;
+}
+
 .copy {
   background: none;
   border: 0;
@@ -1134,9 +1149,21 @@ label {
   content: "▾";
 }
 
+/* Open row: no divider, so its details below read as part of it */
+.table tr.expandable.open td {
+  border-bottom-color: transparent;
+}
+
+/* Details: a quiet inset box, with space below so open entries don't touch */
 .table tr.db-detail td {
-  padding-top: 4px;
-  padding-bottom: 16px;
+  padding: 0 12px 20px 30px;
+}
+
+.db-detail-box {
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 .table-wrap {

@@ -128,7 +128,7 @@ function renderKv(dl, info) {
     const dd = el("dd");
     const isPassword = key === "password";
     if (isPassword) {
-      const reveal = el("button", "btn ghost small", "Click to reveal");
+      const reveal = el("button", "reveal", "Click to reveal");
       reveal.type = "button";
       reveal.onclick = () => reveal.replaceWith(el("code", "", atob(value)));
       dd.appendChild(reveal);

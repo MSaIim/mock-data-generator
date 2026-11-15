@@ -13,7 +13,7 @@ from store import meta
 #   postgres / redshift databases -> one SQLite file each, tables named "<schema>.<table>"
 #   dynamodb tables               -> dynamodb.sqlite
 #   s3 datasets                   -> folders of part files under s3/mock-data/ (the app bucket's mock-data/ prefix)
-#   glue tables                   -> part files under s3/tables/ plus a catalog entry in the metadata store
+#   glue tables                   -> part files under s3/mock-tables/ plus a catalog entry in the metadata store
 # =================================================
 
 ENGINES = ("postgres", "redshift")
@@ -23,7 +23,7 @@ DYNAMO_PATH = os.path.join(DATA_DIR, "dynamodb.sqlite")
 
 # The local folder s3/ stands in for the app bucket, with the same prefixes (trailing separator, like the S3 roots' "/")
 S3_ROOT = os.path.join(DATA_DIR, "s3", "mock-data", "")
-GLUE_ROOT = os.path.join(DATA_DIR, "s3", "tables", "")
+GLUE_ROOT = os.path.join(DATA_DIR, "s3", "mock-tables", "")
 GLUE_DATABASE = "mock_data"
 os.makedirs(S3_ROOT, exist_ok=True)
 os.makedirs(GLUE_ROOT, exist_ok=True)
@@ -36,7 +36,7 @@ os.makedirs(GLUE_ROOT, exist_ok=True)
 # Folder of a dataset on disk
 def dataset_folder(dest: dict) -> str:
     """
-    Build the local folder of a dataset: s3/mock-data/<prefix> for S3, s3/tables/<table> for Glue.
+    Build the local folder of a dataset: s3/mock-data/<prefix> for S3, s3/mock-tables/<table> for Glue.
 
     Arguments:
         dest (dict): validated destination
