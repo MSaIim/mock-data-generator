@@ -162,7 +162,6 @@ Resources:
                   - dynamodb:TagResource
                   - dynamodb:ListTagsOfResource
                   - dynamodb:BatchWriteItem
-                  - dynamodb:PutItem
                   - dynamodb:Scan
                 Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
               - Effect: Allow
@@ -197,7 +196,6 @@ Resources:
                   - rds:DeleteDBInstance
                   - rds:DescribeDBClusters
                   - rds:DescribeDBInstances
-                  - rds:AddTagsToResource
                 Resource: "*"
               # Create and delete Redshift Serverless namespaces and workgroups
               - Effect: Allow
@@ -208,7 +206,6 @@ Resources:
                   - redshift-serverless:DeleteWorkgroup
                   - redshift-serverless:GetNamespace
                   - redshift-serverless:GetWorkgroup
-                  - redshift-serverless:TagResource
                   # Data API signs in as this role (no stored secret)
                   - redshift-serverless:GetCredentials
                 Resource: "*"

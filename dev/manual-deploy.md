@@ -106,7 +106,6 @@ IAM → Roles → Create role:
         "dynamodb:TagResource",
         "dynamodb:ListTagsOfResource",
         "dynamodb:BatchWriteItem",
-        "dynamodb:PutItem",
         "dynamodb:Scan"
       ],
       "Resource": "arn:aws:dynamodb:us-east-1:<ACCOUNT>:table/*"
@@ -159,8 +158,7 @@ IAM → Roles → Create role:
         "rds:DeleteDBCluster",
         "rds:DeleteDBInstance",
         "rds:DescribeDBClusters",
-        "rds:DescribeDBInstances",
-        "rds:AddTagsToResource"
+        "rds:DescribeDBInstances"
       ],
       "Resource": "*"
     },
@@ -173,7 +171,6 @@ IAM → Roles → Create role:
         "redshift-serverless:DeleteWorkgroup",
         "redshift-serverless:GetNamespace",
         "redshift-serverless:GetWorkgroup",
-        "redshift-serverless:TagResource",
         "redshift-serverless:GetCredentials"
       ],
       "Resource": "*"
