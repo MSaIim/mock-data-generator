@@ -37,7 +37,7 @@ The app uses the existing bucket `vgi-cdao-data-quality-poc`, so there's nothing
 
 - `mock-data/`: S3 datasets. The prefix you enter is the dataset (`mock-data/<prefix>/part-00000.<format>`).
 - `mock-tables/`: the files behind Glue tables (`mock-tables/<table>/`). Every Glue table goes in the Glue database `mock_data`, which the app creates on first use if it doesn't exist.
-- `dependencies/DB/<name>.json`: one file per Postgres/Redshift database, holding its status, endpoint and credentials. The bucket's default encryption (SSE-S3) encrypts them at rest.
+- `dependencies/<name>.json`: one file per Postgres/Redshift database, holding its status, endpoint and credentials. The bucket's default encryption (SSE-S3) encrypts them at rest.
 - `staging/`: Redshift `COPY` files, deleted after each load.
 
 Postgres, Redshift and DynamoDB names are used exactly as entered. The app tags every DynamoDB table it creates (`created-by = mock-data-generator`), and only lists, replaces or deletes tables with that tag. Other tables in the account are never touched.

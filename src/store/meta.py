@@ -4,7 +4,7 @@ import os
 # =================================================
 # METADATA STORE: S3 JSON objects in AWS, SQLite when running locally
 # Items are dicts with a "pk" key: DB#<name> (databases), GLUE#<db>#<table> (local Glue catalog)
-# In S3, item DB#<name> is the object dependencies/DB/<name>.json in the app bucket
+# In S3 (where only DB# items exist), item DB#<name> is the object dependencies/<name>.json in the app bucket
 # =================================================
 
 LOCAL = os.environ["MOCKGEN_LOCAL"] == "true"
@@ -25,10 +25,10 @@ else:
     PREFIX = "dependencies/"
 
 
-# S3 object key for an item key (or key prefix)
+# S3 object key for an item key
 def object_key(pk: str) -> str:
     """
-    Map an item key to its S3 object key, e.g. DB#analytics -> dependencies/DB/analytics.json.
+    Map an item key to its S3 object key, e.g. DB#analytics -> dependencies/analytics.json.
 
     Arguments:
         pk (str): item key
@@ -36,7 +36,7 @@ def object_key(pk: str) -> str:
     Returns:
         str: S3 object key
     """
-    return PREFIX + pk.replace("#", "/") + ".json"
+    return PREFIX + pk.split("#", 1)[1] + ".json"
 
 
 # Read one item
@@ -133,11 +133,15 @@ def scan(prefix: str) -> list:
             rows = con.execute("SELECT item FROM meta WHERE substr(pk, 1, ?) = ? ORDER BY pk", (len(prefix), prefix)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
-    # List the objects under the prefix (without the .json suffix), then read each one
+    # Read the .json files directly in dependencies/ and keep the matching items.
+    # Other files there (e.g. the Lambda zip) and subfolders are skipped
     items = []
-    key_prefix = PREFIX + prefix.replace("#", "/")
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=key_prefix):
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=PREFIX, Delimiter="/"):
         for obj in page.get("Contents", []):
-            items.append(json.loads(s3.get_object(Bucket=BUCKET, Key=obj["Key"])["Body"].read()))
+            if not obj["Key"].endswith(".json"):
+                continue
+            item = json.loads(s3.get_object(Bucket=BUCKET, Key=obj["Key"])["Body"].read())
+            if isinstance(item, dict) and str(item.get("pk", "")).startswith(prefix):
+                items.append(item)
 
     return items
