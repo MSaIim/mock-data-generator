@@ -13,22 +13,23 @@ Local mode uses SQLite and local folders in place of AWS, and never contacts AWS
 
 ```bash
 pip install -r requirements.txt
-python local.py        # http://localhost:8000
+python dev/local.py    # http://localhost:8000
 ```
 
 The first visit asks you to create the admin account. Data goes in `data/`.
 
 ## Deploy to AWS
 
-1. `python build.py` builds `lambda-mock-gen.zip`, with Linux wheels for the Lambda runtime.
-2. Upload `lambda-mock-gen.zip` to an S3 bucket.
-3. In CloudFormation, create a stack from `template.yaml`. You'll need:
+1. `python dev/build.py` builds `lambda-mock-gen.zip`, with Linux wheels for the Lambda runtime. CI builds it too (the `lambda-mock-gen` artifact).
+2. Upload `lambda-mock-gen.zip` **and** `template.yaml` to an S3 bucket in the region you'll deploy to.
+3. In CloudFormation, choose **Create stack → Choose an existing template → Amazon S3 URL**, and paste the URL of `template.yaml` (for example `https://<bucket>.s3.<region>.amazonaws.com/template.yaml`). Using the S3 URL avoids the console's "Upload a template file" option, which needs permission to create its own S3 bucket. You'll need:
    - the VPC
    - 3 private subnets in 3 AZs, with a NAT gateway
    - the network range allowed to reach the app
    - the code bucket
    - optionally, an ACM certificate for HTTPS
-4. Open the `AppUrl` output from inside your network and create the admin account.
+4. On the last page, acknowledge that the stack creates IAM roles.
+5. Open the `AppUrl` output from inside your network and create the admin account.
 
 ## Layout
 
@@ -38,7 +39,9 @@ The first visit asks you to create the admin account. Data goes in `data/`.
 | `src/data/` | Fake data generation and file formats |
 | `src/store/` | Metadata store (DynamoDB / SQLite), users and sessions |
 | `src/aws/` | AWS backend: databases, writers, catalog |
-| `src/local/` | SQLite stand-in used by `local.py` |
+| `src/local/` | SQLite stand-in used by `dev/local.py` |
 | `src/ui/` | Single-page UI (HTML, CSS, JS) |
 | `template.yaml` | CloudFormation stack |
-| `build.py` | Builds the Lambda zip from `requirements.txt` |
+| `dev/build.py` | Builds the Lambda zip from `requirements.txt` |
+| `dev/local.py` | Runs the app locally |
+| `.github/workflows/build.yml` | CI: builds the zip on every push and PR |

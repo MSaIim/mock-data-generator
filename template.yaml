@@ -14,7 +14,6 @@ Parameters:
     Description: Private subnets with a route to a NAT gateway, in 3 different AZs (Redshift Serverless needs 3)
   AllowedCidr:
     Type: String
-    Default: 10.0.0.0/8
     Description: Network range allowed to open the UI and connect to the databases (e.g. your VPN or office range)
   CodeBucket:
     Type: String
