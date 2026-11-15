@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import re
+import traceback
 from http import HTTPStatus
 
 from data import formats
@@ -32,7 +33,6 @@ SOURCES = ("postgres", "redshift", "dynamodb", "s3", "glue")
 SQL_SOURCES = ("postgres", "redshift")
 
 TABLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
-BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,30}$")
 DATABASE_RE = re.compile(r"^[a-z][a-z0-9-]{2,30}$")
 PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}(/[a-z0-9][a-z0-9_-]{0,62}){0,9}$")
 
@@ -98,7 +98,7 @@ def check_name(value, pattern: re.Pattern, label: str) -> str:
         str: the validated name
     """
     if not isinstance(value, str) or not pattern.match(value):
-        allowed = "_" if pattern is TABLE_RE else "-"
+        allowed = "_" if pattern is TABLE_RE else "-, _ and / between folders" if pattern is PREFIX_RE else "-"
         raise ValueError(f"Invalid {label}. Use lowercase letters, digits and {allowed}")
     return value
 
@@ -183,12 +183,12 @@ def check_destination(body: dict, need_table: bool, need_format: bool) -> dict:
 
     Arguments:
         body (dict): request body
-        need_table (bool): whether a table name is required
+        need_table (bool): whether a table name (for S3: the prefix) is required
         need_format (bool): whether a file format is required (s3/glue)
 
     Returns:
-        dict: source plus the applicable fields: db + database + schema (SQL), database (glue),
-              bucket + prefix + format (s3/glue), table
+        dict: source plus the applicable fields: db + database + schema (SQL), prefix (s3), format (s3/glue), table (not s3).
+              S3 data always goes under mock-data/ and Glue tables under tables/ in the app bucket
     """
     source = body.get("source")
     if source not in SOURCES:
@@ -202,21 +202,17 @@ def check_destination(body: dict, need_table: bool, need_format: bool) -> dict:
         if need_table:
             dest["schema"] = check_name(body.get("schema"), TABLE_RE, "schema name")
 
-    # Glue: a catalog database
-    if source == "glue":
-        dest["database"] = check_name(body.get("database"), TABLE_RE, "Glue database name")
+    # S3: the prefix (a folder under mock-data/) is the dataset, so there's no table name
+    if source == "s3" and need_table:
+        dest["prefix"] = check_name(body.get("prefix"), PREFIX_RE, "prefix")
 
-    # S3 / Glue: bucket, optional prefix, file format. Glue only needs them to write (the catalog knows the location)
-    if source == "s3" or (source == "glue" and need_format):
-        dest["bucket"] = check_name(body.get("bucket"), BUCKET_RE, "bucket name")
-        prefix = body.get("prefix") or ""
-        dest["prefix"] = prefix if prefix == "" else check_name(prefix, PREFIX_RE, "prefix")
-        if need_format:
-            if body.get("format") not in formats.FORMATS:
-                raise ValueError("Pick a file format")
-            dest["format"] = body["format"]
+    # S3 / Glue: file format, only needed to write
+    if source in ("s3", "glue") and need_format:
+        if body.get("format") not in formats.FORMATS:
+            raise ValueError("Pick a file format")
+        dest["format"] = body["format"]
 
-    if need_table:
+    if need_table and source != "s3":
         dest["table"] = check_name(body.get("table"), TABLE_RE, "table name")
     return dest
 
@@ -242,7 +238,7 @@ def run_action(action: str, body: dict):
     if action == "info":
         return {"local": LOCAL}
 
-    # What users can pick from: ready databases, buckets, Glue databases, column types and formats
+    # What users can pick from: ready databases, where S3/Glue data goes, column types and formats
     if action == "sources":
         ready = []
         for db in databases.list_databases():
@@ -250,8 +246,9 @@ def run_action(action: str, body: dict):
                 ready.append({"name": db["name"], "engine": db["engine"]})
         return {
             "databases": ready,
-            "buckets": writers.list_buckets(),
-            "glue_databases": writers.list_glue_databases(),
+            "s3_root": writers.S3_ROOT,
+            "glue_root": writers.GLUE_ROOT,
+            "glue_database": writers.GLUE_DATABASE,
             "types": list(TYPES),
             "formats": list(formats.FORMATS),
         }
@@ -309,11 +306,6 @@ def run_action(action: str, body: dict):
     # Delete a table or dataset
     if action == "delete_table":
         writers.delete_table(check_destination(body, True, False))
-        return {"ok": True}
-
-    # Delete a bucket
-    if action == "delete_bucket":
-        writers.delete_bucket(check_name(body.get("bucket"), BUCKET_RE, "bucket name"))
         return {"ok": True}
 
     # Databases (Postgres / Redshift servers)
@@ -379,3 +371,8 @@ def handler(event: dict, context) -> dict:
         return response(400, {"error": str(e)})
     except ClientError as e:
         return response(400, {"error": e.response["Error"]["Message"]})
+    # Anything else (e.g. a database driver error): log the traceback to CloudWatch and show the message,
+    # instead of crashing the Lambda, which the load balancer turns into a bare 502
+    except Exception as e:
+        traceback.print_exc()
+        return response(500, {"error": f"{type(e).__name__}: {e}"})

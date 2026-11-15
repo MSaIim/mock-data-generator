@@ -58,89 +58,84 @@ def catalog(dbs: list) -> dict:
                         "columns": columns,
                     }
                 )
-        except (ValueError, ClientError, pg8000.native.InterfaceError, OSError) as e:
-            errors.append(f"{db['engine']} {db['name']}: {e}")
+        # Any failure (including driver errors while connecting) is reported for this database only
+        except Exception as e:
+            errors.append(f"{db['engine']} {db['name']}: {type(e).__name__}: {e}")
 
-    # DynamoDB: approximate item count and size from DescribeTable
+    # DynamoDB: tables this app created, with approximate item count and size from DescribeTable
     try:
-        for page in writers.dynamo.get_paginator("list_tables").paginate():
-            for name in page["TableNames"]:
-                if not name.startswith(writers.DYNAMO_PREFIX):
-                    continue
-                table = writers.dynamo.describe_table(TableName=name)["Table"]
-                short = name[len(writers.DYNAMO_PREFIX) :]
-                datasets.append(
-                    {
-                        "source": "dynamodb",
-                        "name": short,
-                        "location": name,
-                        "dest": {"table": short},
-                        "rows": table.get("ItemCount"),
-                        "rows_estimate": True,
-                        "size": table.get("TableSizeBytes"),
-                        "updated": table["CreationDateTime"].isoformat(),
-                    }
-                )
+        for table in writers.app_tables():
+            datasets.append(
+                {
+                    "source": "dynamodb",
+                    "name": table["TableName"],
+                    "location": table["TableName"],
+                    "dest": {"table": table["TableName"]},
+                    "rows": table.get("ItemCount"),
+                    "rows_estimate": True,
+                    "size": table.get("TableSizeBytes"),
+                    "updated": table["CreationDateTime"].isoformat(),
+                }
+            )
     except ClientError as e:
         errors.append(f"dynamodb: {e.response['Error']['Message']}")
 
-    # S3: group part files into datasets
+    # S3: group the part files under mock-data/ into datasets, one per prefix
     try:
-        for short in writers.list_buckets():
-            found = {}
-            for page in writers.s3.get_paginator("list_objects_v2").paginate(Bucket=writers.BUCKET_PREFIX + short):
-                for obj in page.get("Contents", []):
-                    match = writers.PART_RE.match(obj["Key"])
-                    if not match:
-                        continue
-                    entry = found.setdefault(
-                        (match.group(1) or "", match.group(2)),
-                        {
-                            "files": 0,
-                            "size": 0,
-                            "updated": obj["LastModified"],
-                            "format": obj["Key"].rsplit(".", 1)[1],
-                        },
-                    )
-                    entry["files"] += 1
-                    entry["size"] += obj["Size"]
-                    entry["updated"] = max(entry["updated"], obj["LastModified"])
-            for (prefix, table), entry in found.items():
-                datasets.append(
+        found = {}
+        for page in writers.s3.get_paginator("list_objects_v2").paginate(Bucket=writers.APP_BUCKET, Prefix=writers.DATA_PREFIX):
+            for obj in page.get("Contents", []):
+                match = writers.PART_RE.match(obj["Key"][len(writers.DATA_PREFIX) :])
+                if not match:
+                    continue
+                entry = found.setdefault(
+                    match.group(1),
                     {
-                        "source": "s3",
-                        "name": table,
-                        "location": f"s3://{short}/{prefix + '/' if prefix else ''}{table}/",
-                        "dest": {"bucket": short, "prefix": prefix, "table": table},
-                        "format": entry["format"],
-                        "files": entry["files"],
-                        "size": entry["size"],
-                        "updated": entry["updated"].isoformat(),
-                    }
+                        "files": 0,
+                        "size": 0,
+                        "updated": obj["LastModified"],
+                        "format": obj["Key"].rsplit(".", 1)[1],
+                    },
                 )
+                entry["files"] += 1
+                entry["size"] += obj["Size"]
+                entry["updated"] = max(entry["updated"], obj["LastModified"])
+        for prefix, entry in found.items():
+            datasets.append(
+                {
+                    "source": "s3",
+                    "name": prefix,
+                    "location": f"{writers.S3_ROOT}{prefix}/",
+                    "dest": {"prefix": prefix},
+                    "format": entry["format"],
+                    "files": entry["files"],
+                    "size": entry["size"],
+                    "updated": entry["updated"].isoformat(),
+                }
+            )
     except ClientError as e:
         errors.append(f"s3: {e.response['Error']['Message']}")
 
-    # Glue: catalog tables with their columns and location
+    # Glue: tables in the mock_data database with their columns and location (none if it doesn't exist yet)
     try:
-        for short in writers.list_glue_databases():
-            for page in writers.glue.get_paginator("get_tables").paginate(DatabaseName=writers.GLUE_PREFIX + short):
-                for table in page["TableList"]:
-                    storage = table["StorageDescriptor"]
-                    updated = table.get("UpdateTime") or table.get("CreateTime")
-                    datasets.append(
-                        {
-                            "source": "glue",
-                            "name": table["Name"],
-                            "location": f"{short}.{table['Name']} → {storage['Location']}",
-                            "dest": {"database": short, "table": table["Name"]},
-                            "format": table.get("Parameters", {}).get("classification"),
-                            "columns": [{"name": c["Name"], "type": c["Type"]} for c in storage["Columns"]],
-                            "updated": updated.isoformat() if updated else None,
-                        }
-                    )
+        for page in writers.glue.get_paginator("get_tables").paginate(DatabaseName=writers.GLUE_DATABASE):
+            for table in page["TableList"]:
+                storage = table["StorageDescriptor"]
+                updated = table.get("UpdateTime") or table.get("CreateTime")
+                datasets.append(
+                    {
+                        "source": "glue",
+                        "name": table["Name"],
+                        "location": f"{writers.GLUE_DATABASE}.{table['Name']} → {storage['Location']}",
+                        "dest": {"table": table["Name"]},
+                        "format": table.get("Parameters", {}).get("classification"),
+                        "columns": [{"name": c["Name"], "type": c["Type"]} for c in storage["Columns"]],
+                        "updated": updated.isoformat() if updated else None,
+                    }
+                )
     except ClientError as e:
-        errors.append(f"glue: {e.response['Error']['Message']}")
+        if e.response["Error"]["Code"] != "EntityNotFoundException":
+            errors.append(f"glue: {e.response['Error']['Message']}")
 
     return {"datasets": datasets, "errors": errors}
 
@@ -157,7 +152,7 @@ def sample(dest: dict) -> dict:
         dict: {"columns": [names], "rows": [dicts], "row_count": int or None, "types": {name: type} for Parquet/Avro files}
     """
     source = dest["source"]
-    qualified = f'"{dest.get("schema")}"."{dest["table"]}"'
+    qualified = f'"{dest.get("schema")}"."{dest.get("table")}"'
 
     # Postgres
     if source == "postgres":
@@ -180,7 +175,8 @@ def sample(dest: dict) -> dict:
 
     # DynamoDB: a short scan (items can have different attributes)
     if source == "dynamodb":
-        items = writers.dynamo_resource.Table(writers.DYNAMO_PREFIX + dest["table"]).scan(Limit=SAMPLE_ROWS)["Items"]
+        writers.require_app_table(dest["table"])
+        items = writers.dynamo_resource.Table(dest["table"]).scan(Limit=SAMPLE_ROWS)["Items"]
         names = ["pk"]
         for item in items:
             for key in item:
@@ -188,17 +184,17 @@ def sample(dest: dict) -> dict:
                     names.append(key)
         return {"columns": names, "rows": items, "row_count": None}
 
-    # S3 / Glue: decode the first part file
+    # S3 / Glue: decode the first part file (always in the app bucket)
+    bucket = writers.APP_BUCKET
     if source == "s3":
-        bucket = writers.BUCKET_PREFIX + dest["bucket"]
         folder = writers.dataset_folder(dest)
         hive_csv = False
     else:
-        table = writers.glue.get_table(DatabaseName=writers.GLUE_PREFIX + dest["database"], Name=dest["table"])["Table"]
+        table = writers.glue.get_table(DatabaseName=writers.GLUE_DATABASE, Name=dest["table"])["Table"]
         location = table["StorageDescriptor"]["Location"]
-        if not location.startswith("s3://" + writers.BUCKET_PREFIX):
-            raise ValueError("This table's files aren't in a bucket this tool manages")
-        bucket, _, folder = location[len("s3://") :].partition("/")
+        if not location.startswith(writers.GLUE_ROOT):
+            raise ValueError(f"This table's files aren't under {writers.GLUE_ROOT}")
+        folder = location[len(f"s3://{bucket}/") :]
         hive_csv = True
     listing = writers.s3.list_objects_v2(Bucket=bucket, Prefix=folder, Delimiter="/")
     parts = sorted(obj["Key"] for obj in listing.get("Contents", []) if writers.PART_RE.match(obj["Key"]))

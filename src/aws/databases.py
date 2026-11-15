@@ -1,3 +1,4 @@
+import base64
 import os
 import secrets
 import time
@@ -75,13 +76,14 @@ def public(record: dict) -> dict:
         record (dict): database record
 
     Returns:
-        dict: name, engine, status and error
+        dict: name, engine, status, error and created_at
     """
     return {
         "name": record["name"],
         "engine": record["engine"],
         "status": record["status"],
         "error": record.get("error", ""),
+        "created_at": record["created_at"],
     }
 
 
@@ -116,11 +118,13 @@ def create_database(name: str, engine: str) -> dict:
     Returns:
         dict: public record
     """
-    ident = "mockgen-" + name
+    # AWS resources use the name exactly as entered
+    ident = name
     # Upper, lower and digit are guaranteed so the password passes Redshift's rules
     password = secrets.token_urlsafe(18) + "Aa1"
 
-    # Register first (with the credentials) so a failed create can still be cleaned up from the admin page
+    # Register first (with the credentials) so a failed create can still be cleaned up from the admin page.
+    # The password is stored and sent base64-encoded (obfuscated, not encrypted); the UI decodes it on "Click to reveal"
     record = {
         "pk": "DB#" + name,
         "name": name,
@@ -128,7 +132,7 @@ def create_database(name: str, engine: str) -> dict:
         "ident": ident,
         "database": DB_NAME,
         "username": DB_USER,
-        "password": password,
+        "password": base64.b64encode(password.encode()).decode(),
         "status": "creating",
         "created_at": int(time.time()),
     }
@@ -312,7 +316,7 @@ def connection_info(db: dict) -> dict:
         db (dict): record from get_database
 
     Returns:
-        dict: host, port, database, username, password and a ready-made connection string
+        dict: host, port, database, username, password (base64-encoded) and a ready-made connection string
     """
     port = int(db["port"])
     info = {

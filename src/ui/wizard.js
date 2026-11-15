@@ -12,7 +12,6 @@ const SQL_SOURCES = ["postgres", "redshift"];
 const FILE_SOURCES = ["s3", "glue"];
 const TYPED_FORMATS = ["parquet", "avro"];
 const NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
-const BUCKET_RE = /^[a-z0-9][a-z0-9-]{2,30}$/;
 const PREFIX_RE = /^[a-z0-9][a-z0-9_-]{0,62}(\/[a-z0-9][a-z0-9_-]{0,62}){0,9}$/;
 const MAX_ROWS = 100000;
 const MAX_CELLS = 1000000;
@@ -24,8 +23,8 @@ const SOURCES = {
   postgres: { desc: "Tables in an Aurora PostgreSQL database", fields: ["database", "schema", "table"] },
   redshift: { desc: "Tables in a Redshift Serverless warehouse", fields: ["database", "schema", "table"] },
   dynamodb: { desc: "A key-value table, one item per row", fields: ["table"] },
-  s3: { desc: "Files in a bucket, written as part files", fields: ["bucket", "prefix", "table", "format"] },
-  glue: { desc: "Catalog table over S3 files, query it in Athena", fields: ["glueDatabase", "bucket", "prefix", "table", "format"] },
+  s3: { desc: "Files in S3, written as part files", fields: ["prefix", "format"] },
+  glue: { desc: "Catalog table over S3 files, query it in Athena", fields: ["table", "format"] },
 };
 
 // Column names the auto-generator uses for each type
@@ -56,10 +55,10 @@ const AUTO_NAMES = {
 const state = {
   step: 1,
   source: null,
-  sources: { databases: [], buckets: [], glue_databases: [], types: [], formats: [] },
+  sources: { databases: [], s3_root: "", glue_root: "", glue_database: "", types: [], formats: [] },
   browse: {},
-  datasets: {},
-  dest: { database: "", glueDatabase: "", schema: "public", bucket: "", prefix: "", table: "", format: "csv" },
+  datasets: [],
+  dest: { database: "", schema: "public", prefix: "", table: "", format: "csv" },
   columns: [
     { name: "id", type: "uuid", null_pct: 0, junk_pct: 0 },
     { name: "full_name", type: "name", null_pct: 5, junk_pct: 5 },
@@ -343,8 +342,6 @@ function renderFields() {
   for (const field of document.querySelectorAll("#dest-fields [data-field]")) {
     field.hidden = !info.fields.includes(field.dataset.field);
   }
-  $("table-label").textContent = state.source === "s3" ? "Dataset name" : "Table";
-
   // Database select (admin-created only)
   const select = $("f-database");
   select.replaceChildren();
@@ -360,16 +357,15 @@ function renderFields() {
     state.dest.database = dbs[0].name;
   }
 
-  for (const name of ["glueDatabase", "schema", "bucket", "prefix", "table"]) {
+  for (const name of ["schema", "prefix", "table"]) {
     $(`f-${name}`).value = state.dest[name];
   }
-  setOptions("l-bucket", state.sources.buckets);
-  setOptions("l-glueDatabase", state.sources.glue_databases);
+  $("prefix-help").textContent = `The dataset's folder under ${state.sources.s3_root}`;
   updateDatalists();
   showDestErrors(false);
 }
 
-// What exists in the selected database / Glue database / DynamoDB
+// What exists in the selected database, DynamoDB or the Glue database
 async function refreshBrowse() {
   const s = state.source;
   const d = state.dest;
@@ -378,11 +374,8 @@ async function refreshBrowse() {
     if (SQL_SOURCES.includes(s) && d.database) {
       state.browse = await api("browse", { source: s, database: d.database });
     }
-    if (s === "dynamodb") {
+    if (s === "dynamodb" || s === "glue") {
       state.browse = await api("browse", { source: s });
-    }
-    if (s === "glue" && state.sources.glue_databases.includes(d.glueDatabase)) {
-      state.browse = await api("browse", { source: s, database: d.glueDatabase });
     }
   } catch (e) {
     state.footError = e.message;
@@ -391,12 +384,12 @@ async function refreshBrowse() {
   updateDatalists();
 }
 
-// What datasets exist in the selected bucket
+// What S3 datasets (prefixes) exist
 async function refreshDatasets() {
-  state.datasets = {};
-  if (FILE_SOURCES.includes(state.source) && bucketExists()) {
+  state.datasets = [];
+  if (state.source === "s3") {
     try {
-      state.datasets = (await api("browse", { source: "s3", bucket: state.dest.bucket })).datasets;
+      state.datasets = (await api("browse", { source: "s3" })).datasets;
     } catch (e) {
       state.footError = e.message;
       renderFooter();
@@ -405,23 +398,24 @@ async function refreshDatasets() {
   updateDatalists();
 }
 
-// Tables at the currently selected location
+// Tables at the currently selected location (S3: existing prefixes)
 function knownTables() {
   if (SQL_SOURCES.includes(state.source)) {
     return (state.browse.schemas || {})[state.dest.schema] || [];
   }
   if (state.source === "s3") {
-    return state.datasets[state.dest.prefix] || [];
+    return state.datasets;
   }
   return state.browse.tables || [];
 }
 
-function tableExists() {
-  return knownTables().includes(state.dest.table);
+// The name that identifies the dataset: the prefix for S3, the table otherwise
+function destName() {
+  return state.source === "s3" ? state.dest.prefix : state.dest.table;
 }
 
-function bucketExists() {
-  return state.sources.buckets.includes(state.dest.bucket);
+function tableExists() {
+  return knownTables().includes(destName());
 }
 
 // Refresh the dropdown suggestions, existence badges and the panel
@@ -431,17 +425,14 @@ function updateDatalists() {
     schemas.unshift("public");
   }
   setOptions("l-schema", schemas);
-  setOptions(
-    "l-prefix",
-    Object.keys(state.datasets).filter((p) => p),
-  );
+  setOptions("l-prefix", state.datasets);
   setOptions("l-table", knownTables());
 
   // Badges: new vs existing
   const badge = (value, exists, existsText) =>
     value ? `<span class="badge ${exists ? "replace" : "new"}">${exists ? existsText : "New"}</span>` : "";
   $("table-badge").innerHTML = badge(state.dest.table, tableExists(), "Exists · will be replaced");
-  $("bucket-badge").innerHTML = badge(state.dest.bucket, bucketExists(), "Exists");
+  $("prefix-badge").innerHTML = badge(state.dest.prefix, tableExists(), "Exists · will be replaced");
   renderPanel();
 }
 
@@ -457,19 +448,13 @@ function destErrors() {
   if (fields.includes("database") && !d.database) {
     errors.database = "No database selected";
   }
-  if (fields.includes("glueDatabase") && !NAME_RE.test(d.glueDatabase)) {
-    errors.glueDatabase = "Lowercase letters, digits and _; starts with a letter";
-  }
   if (fields.includes("schema") && !NAME_RE.test(d.schema)) {
     errors.schema = "Lowercase letters, digits and _; starts with a letter";
   }
-  if (fields.includes("bucket") && !BUCKET_RE.test(d.bucket)) {
-    errors.bucket = "3–31 characters: lowercase letters, digits and -";
-  }
-  if (fields.includes("prefix") && d.prefix && !PREFIX_RE.test(d.prefix)) {
+  if (fields.includes("prefix") && !PREFIX_RE.test(d.prefix)) {
     errors.prefix = "Folders of lowercase letters, digits, - and _, separated by /";
   }
-  if (!NAME_RE.test(d.table)) {
+  if (fields.includes("table") && !NAME_RE.test(d.table)) {
     errors.table = "Lowercase letters, digits and _; starts with a letter";
   }
   return errors;
@@ -478,7 +463,7 @@ function destErrors() {
 // Show field errors (only for touched fields unless forced)
 function showDestErrors(force) {
   const errors = destErrors();
-  for (const name of ["database", "glueDatabase", "schema", "bucket", "prefix", "table"]) {
+  for (const name of ["database", "schema", "prefix", "table"]) {
     const input = $(`f-${name}`);
     const show = Boolean(errors[name]) && (force || (Boolean(input.dataset.touched) && state.dest[name] !== ""));
     $(`e-${name}`).textContent = show ? errors[name] : "";
@@ -498,9 +483,6 @@ function onDestChange() {
   }
 }
 
-const browseSoon = debounce(refreshBrowse, 300);
-const datasetsSoon = debounce(refreshDatasets, 300);
-
 // Wire a destination input to state
 function bindDestInput(name) {
   const input = $(`f-${name}`);
@@ -511,12 +493,6 @@ function bindDestInput(name) {
     }
     state.dest[name] = value;
     input.dataset.touched = "1";
-    if (name === "glueDatabase") {
-      browseSoon();
-    }
-    if (name === "bucket") {
-      datasetsSoon();
-    }
     onDestChange();
   });
 }
@@ -525,8 +501,6 @@ function bindDestInput(name) {
 async function onDatasetsChanged() {
   await loadSources();
   if (state.source) {
-    setOptions("l-bucket", state.sources.buckets);
-    setOptions("l-glueDatabase", state.sources.glue_databases);
     await Promise.all([refreshBrowse(), refreshDatasets()]);
   }
   if (state.step === 3) {
@@ -537,15 +511,13 @@ async function onDatasetsChanged() {
 // The destination fields the server expects for this source
 function destPayload() {
   const d = state.dest;
-  const payload = { table: d.table };
+  // S3 datasets are identified by their prefix, everything else by a table name
+  const payload = state.source === "s3" ? { prefix: d.prefix } : { table: d.table };
   if (SQL_SOURCES.includes(state.source)) {
     Object.assign(payload, { database: d.database, schema: d.schema });
   }
-  if (state.source === "glue") {
-    payload.database = d.glueDatabase;
-  }
   if (FILE_SOURCES.includes(state.source)) {
-    Object.assign(payload, { bucket: d.bucket, prefix: d.prefix, format: d.format });
+    payload.format = d.format;
   }
   return payload;
 }
@@ -560,8 +532,13 @@ function destPath() {
   if (state.source === "dynamodb") {
     return `dynamodb://${table}`;
   }
-  const s3 = `s3://${d.bucket || "…"}/${d.prefix ? d.prefix + "/" : ""}${table}/`;
-  return state.source === "glue" ? `${d.glueDatabase || "…"}.${table}  →  ${s3}` : s3;
+  return state.source === "glue" ? `${state.sources.glue_database}.${table}  →  ${dataFolder()}` : dataFolder();
+}
+
+// Where the part files go: <s3_root><prefix>/ for S3, <glue_root><table>/ for Glue
+function dataFolder() {
+  const root = state.source === "glue" ? state.sources.glue_root : state.sources.s3_root;
+  return `${root}${destName() || "…"}/`;
 }
 
 // =================================================
@@ -783,7 +760,7 @@ function renderPanel() {
     dest.querySelector(".dest-line span").textContent =
       SOURCE_LABELS[state.source] + (FILE_SOURCES.includes(state.source) ? ` · ${FORMAT_LABELS[state.dest.format]}` : "");
     dest.querySelector(".path").textContent = destPath();
-    $("p-status").innerHTML = state.dest.table
+    $("p-status").innerHTML = destName()
       ? `<span class="badge ${tableExists() ? "replace" : "new"}">${tableExists() ? "Replace" : "New"}</span>`
       : "";
   }
@@ -870,19 +847,12 @@ function planSteps() {
     steps.push([verbIcon, `${verb} table ${d.table} (partition key: pk)`]);
     steps.push(["check", `Write ${rows} items${inBatches}`]);
   } else {
-    if (!bucketExists()) {
-      steps.push(["plus", `Create bucket ${d.bucket}`]);
-    }
-    if (state.source === "glue" && !state.sources.glue_databases.includes(d.glueDatabase)) {
-      steps.push(["plus", `Create Glue database ${d.glueDatabase}`]);
-    }
-    const folder = `${d.bucket}/${d.prefix ? d.prefix + "/" : ""}${d.table}/`;
     steps.push([
       "check",
-      `Write ${rows} rows as ${batches.toLocaleString()} ${FORMAT_LABELS[d.format]} part file${batches === 1 ? "" : "s"} to ${folder}`,
+      `Write ${rows} rows as ${batches.toLocaleString()} ${FORMAT_LABELS[d.format]} part file${batches === 1 ? "" : "s"} to ${dataFolder()}`,
     ]);
     if (state.source === "glue") {
-      steps.push([verbIcon, `${verb} Glue table ${d.glueDatabase}.${d.table}`]);
+      steps.push([verbIcon, `${verb} Glue table ${state.sources.glue_database}.${d.table}`]);
     } else if (tableExists()) {
       steps.push(["swap", "Replace the dataset's existing part files"]);
     }
@@ -942,7 +912,7 @@ async function generate() {
       batch_size: state.batching ? state.batchSize : null,
       columns: state.columns,
     });
-    // New buckets, Glue databases and tables now exist
+    // New tables and datasets now exist
     await loadSources();
     await Promise.all([refreshBrowse(), refreshDatasets()]);
   } catch (e) {
@@ -955,11 +925,15 @@ async function generate() {
   }
 }
 
-// Start over with a new table name, keeping source and columns
+// Start over with a new table name (S3: prefix), keeping source and columns
 function newDataset() {
   state.result = null;
   state.dest.table = "";
   $("f-table").value = "";
+  if (state.source === "s3") {
+    state.dest.prefix = "";
+    $("f-prefix").value = "";
+  }
   updateDatalists();
   setStep(1);
 }
@@ -994,7 +968,7 @@ $("f-database").onchange = () => {
   refreshBrowse();
   onDestChange();
 };
-for (const name of ["glueDatabase", "schema", "bucket", "prefix", "table"]) {
+for (const name of ["schema", "prefix", "table"]) {
   bindDestInput(name);
 }
 

@@ -10,7 +10,7 @@ Parameters:
     Type: String
     Default: dq-poc-mock-data
     AllowedPattern: "^[a-z][a-z0-9-]{2,23}$"
-    Description: Prefix for every resource name (lowercase, max 24 characters). Must not start with "mockgen-", which the app reserves for user datasets
+    Description: Prefix for every resource name (lowercase, max 24 characters)
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC to deploy into
@@ -33,7 +33,7 @@ Parameters:
     Description: S3 key of the code zip
   AppBucket:
     Type: String
-    Description: Existing S3 bucket for the app's own files - the database registry under dependencies/ and temporary Redshift COPY files under staging/
+    Description: Existing S3 bucket. The app only uses mock-data/ (S3 datasets), tables/ (Glue table files), dependencies/ (database registry) and staging/ (Redshift COPY files)
   CertificateArn:
     Type: String
     Default: ""
@@ -153,42 +153,41 @@ Resources:
                 Effect: Allow
                 Action: [ec2:CreateNetworkInterface, ec2:DeleteNetworkInterface, ec2:AssignPrivateIpAddresses, ec2:UnassignPrivateIpAddresses]
                 Resource: "*"
-              # DynamoDB data sources (mockgen-* only)
+              # DynamoDB data sources: any table name, but the app only replaces or deletes tables it tagged when creating them
               - Effect: Allow
-                Action: [dynamodb:CreateTable, dynamodb:DeleteTable, dynamodb:DescribeTable, dynamodb:BatchWriteItem, dynamodb:PutItem, dynamodb:Scan]
-                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/mockgen-*"
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:TagResource
+                  - dynamodb:ListTagsOfResource
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
               - Effect: Allow
                 Action: dynamodb:ListTables
                 Resource: "*"
-              # S3 data sources (mockgen-<account>-* only)
+              # App bucket: list it, and read/write only under its four prefixes (no bucket creation or deletion)
+              #   mock-data/ S3 datasets, tables/ Glue table files, dependencies/ database registry,
+              #   staging/ Redshift COPY files (read by Redshift with this same role)
               - Effect: Allow
-                Action: [s3:CreateBucket, s3:DeleteBucket, s3:ListBucket, s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Action: s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::${AppBucket}"
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
                 Resource:
-                  - !Sub "arn:aws:s3:::mockgen-${AWS::AccountId}-*"
-                  - !Sub "arn:aws:s3:::mockgen-${AWS::AccountId}-*/*"
-              - Effect: Allow
-                Action: s3:ListAllMyBuckets
-                Resource: "*"
-              # App bucket, only under dependencies/ (database registry) and staging/ (Redshift COPY files, read by Redshift with this same role)
-              - Effect: Allow
-                Action: [s3:ListBucket, s3:PutObject, s3:GetObject, s3:DeleteObject]
-                Resource:
-                  - !Sub "arn:aws:s3:::${AppBucket}"
+                  - !Sub "arn:aws:s3:::${AppBucket}/mock-data/*"
+                  - !Sub "arn:aws:s3:::${AppBucket}/tables/*"
                   - !Sub "arn:aws:s3:::${AppBucket}/dependencies/*"
                   - !Sub "arn:aws:s3:::${AppBucket}/staging/*"
-              # Glue: list databases (read-only, to find the mockgen_* ones)
+              # Glue: only the mock_data database and its tables (created on first use)
               - Effect: Allow
-                Action: glue:GetDatabases
+                Action: [glue:GetDatabase, glue:CreateDatabase, glue:GetTable, glue:GetTables, glue:CreateTable, glue:DeleteTable]
                 Resource:
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/*"
-              # Glue: create and change databases and tables (mockgen_* only)
-              - Effect: Allow
-                Action: [glue:CreateDatabase, glue:GetDatabase, glue:GetTable, glue:GetTables, glue:CreateTable, glue:DeleteTable]
-                Resource:
-                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
-                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/mockgen_*"
-                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/mockgen_*/*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/mock_data"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/mock_data/*"
               # Create and delete Aurora Postgres clusters
               - Effect: Allow
                 Action:
@@ -260,7 +259,6 @@ Resources:
       Environment:
         Variables:
           APP_BUCKET: !Ref AppBucket
-          BUCKET_PREFIX: !Sub "mockgen-${AWS::AccountId}-"
           DB_SUBNET_GROUP: !Ref DatabaseSubnetGroup
           DB_SECURITY_GROUP: !GetAtt DatabaseSecurityGroup.GroupId
           SUBNET_IDS: !Join [",", !Ref PrivateSubnetIds]

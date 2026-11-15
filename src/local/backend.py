@@ -1,5 +1,4 @@
 import os
-import shutil
 import sqlite3
 import time
 from contextlib import closing
@@ -13,16 +12,21 @@ from store import meta
 # Same function names, but everything lives under MOCKGEN_LOCAL_DIR and nothing touches AWS:
 #   postgres / redshift databases -> one SQLite file each, tables named "<schema>.<table>"
 #   dynamodb tables               -> dynamodb.sqlite
-#   s3 buckets                    -> folders of part files in the chosen format
-#   glue tables                   -> part files in a bucket folder plus a catalog entry in the metadata store
+#   s3 datasets                   -> folders of part files under s3/mock-data/ (the app bucket's mock-data/ prefix)
+#   glue tables                   -> part files under s3/tables/ plus a catalog entry in the metadata store
 # =================================================
 
 ENGINES = ("postgres", "redshift")
 
 DATA_DIR = os.path.abspath(os.environ["MOCKGEN_LOCAL_DIR"])
-S3_DIR = os.path.join(DATA_DIR, "s3")
 DYNAMO_PATH = os.path.join(DATA_DIR, "dynamodb.sqlite")
-os.makedirs(S3_DIR, exist_ok=True)
+
+# The local folder s3/ stands in for the app bucket, with the same prefixes (trailing separator, like the S3 roots' "/")
+S3_ROOT = os.path.join(DATA_DIR, "s3", "mock-data", "")
+GLUE_ROOT = os.path.join(DATA_DIR, "s3", "tables", "")
+GLUE_DATABASE = "mock_data"
+os.makedirs(S3_ROOT, exist_ok=True)
+os.makedirs(GLUE_ROOT, exist_ok=True)
 
 # =================================================
 # HELPERS
@@ -32,7 +36,7 @@ os.makedirs(S3_DIR, exist_ok=True)
 # Folder of a dataset on disk
 def dataset_folder(dest: dict) -> str:
     """
-    Build the local folder of a dataset: s3/<bucket>/<prefix>/<table>.
+    Build the local folder of a dataset: s3/mock-data/<prefix> for S3, s3/tables/<table> for Glue.
 
     Arguments:
         dest (dict): validated destination
@@ -40,8 +44,9 @@ def dataset_folder(dest: dict) -> str:
     Returns:
         str: absolute folder path
     """
-    parts = [S3_DIR, dest["bucket"]] + (dest["prefix"].split("/") if dest["prefix"] else []) + [dest["table"]]
-    return os.path.join(*parts)
+    if dest["source"] == "glue":
+        return os.path.join(GLUE_ROOT, dest["table"])
+    return os.path.join(S3_ROOT, *dest["prefix"].split("/"))
 
 
 # Replace a dataset folder's part files
@@ -136,9 +141,9 @@ def public(record: dict) -> dict:
         record (dict): database record
 
     Returns:
-        dict: name, engine, status and error
+        dict: name, engine, status, error and created_at
     """
-    return {"name": record["name"], "engine": record["engine"], "status": record["status"], "error": ""}
+    return {"name": record["name"], "engine": record["engine"], "status": record["status"], "error": "", "created_at": record["created_at"]}
 
 
 # =================================================
@@ -308,8 +313,7 @@ def write(dest: dict, columns: list, batches) -> dict:
     folder, parts = write_dataset(dest, columns, batches, True)
     meta.put(
         {
-            "pk": f"GLUE#{dest['database']}#{dest['table']}",
-            "database": dest["database"],
+            "pk": f"GLUE#{dest['table']}",
             "table": dest["table"],
             "folder": folder,
             "format": dest["format"],
@@ -318,7 +322,7 @@ def write(dest: dict, columns: list, batches) -> dict:
     )
     return {
         "type": "glue (local catalog)",
-        "database": dest["database"],
+        "database": GLUE_DATABASE,
         "table": dest["table"],
         "folder": folder,
         "format": dest["format"],
@@ -329,31 +333,6 @@ def write(dest: dict, columns: list, batches) -> dict:
 # =================================================
 # BROWSING
 # =================================================
-
-
-# List local bucket folders
-def list_buckets() -> list:
-    """
-    List bucket folders.
-
-    Returns:
-        list: bucket names
-    """
-    return sorted(name for name in os.listdir(S3_DIR) if os.path.isdir(os.path.join(S3_DIR, name)))
-
-
-# List local Glue databases (those that have at least one table)
-def list_glue_databases() -> list:
-    """
-    List Glue databases from the local catalog.
-
-    Returns:
-        list: database names
-    """
-    names = set()
-    for item in meta.scan("GLUE#"):
-        names.add(item["database"])
-    return sorted(names)
 
 
 # What already exists at a location, for the dropdowns
@@ -380,19 +359,16 @@ def browse(dest: dict) -> dict:
     if source == "dynamodb":
         return {"tables": sqlite_tables(DYNAMO_PATH)}
 
-    # S3: any folder holding part files is a dataset; its parent path is the prefix
+    # S3: any folder under mock-data/ holding part files is a dataset; its path is the prefix
     if source == "s3":
-        datasets = {}
-        root = os.path.join(S3_DIR, dest["bucket"])
-        for folder, _, files in os.walk(root):
-            if any(name.startswith("part-") for name in files):
-                rel = os.path.relpath(folder, root).replace(os.sep, "/")
-                prefix, _, table = rel.rpartition("/")
-                datasets.setdefault(prefix, []).append(table)
+        datasets = []
+        for folder, _, files in os.walk(S3_ROOT):
+            if folder != S3_ROOT.rstrip(os.sep) and any(name.startswith("part-") for name in files):
+                datasets.append(os.path.relpath(folder, S3_ROOT).replace(os.sep, "/"))
         return {"datasets": datasets}
 
-    # Glue: catalog entries for the database
-    return {"tables": [item["table"] for item in meta.scan(f"GLUE#{dest['database']}#")]}
+    # Glue: catalog entries
+    return {"tables": [item["table"] for item in meta.scan("GLUE#")]}
 
 
 # =================================================
@@ -423,21 +399,10 @@ def delete_table(dest: dict) -> None:
                     os.remove(os.path.join(folder, name))
         return
     # Glue: remove the files the catalog entry points at, then the entry
-    pk = f"GLUE#{dest['database']}#{dest['table']}"
+    pk = f"GLUE#{dest['table']}"
     entry = meta.get(pk)
     if entry and os.path.isdir(entry["folder"]):
         for name in os.listdir(entry["folder"]):
             if name.startswith("part-"):
                 os.remove(os.path.join(entry["folder"], name))
     meta.delete(pk)
-
-
-# Delete a local bucket folder
-def delete_bucket(bucket_name: str) -> None:
-    """
-    Delete a bucket folder and its files.
-
-    Arguments:
-        bucket_name (str): validated bucket name
-    """
-    shutil.rmtree(os.path.join(S3_DIR, bucket_name), ignore_errors=True)

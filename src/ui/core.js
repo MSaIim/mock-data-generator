@@ -120,19 +120,27 @@ function buildTable(names, rows, types = {}) {
   return box;
 }
 
-// Render key/value pairs with copy buttons
+// Render key/value pairs with copy buttons. A "password" arrives base64-encoded and is only decoded when revealed or copied
 function renderKv(dl, info) {
   dl.replaceChildren();
   for (const [key, value] of Object.entries(info)) {
     dl.appendChild(el("dt", "", key.replace(/_/g, " ")));
     const dd = el("dd");
-    dd.appendChild(el("code", "", String(value)));
+    const isPassword = key === "password";
+    if (isPassword) {
+      const reveal = el("button", "btn ghost small", "Click to reveal");
+      reveal.type = "button";
+      reveal.onclick = () => reveal.replaceWith(el("code", "", atob(value)));
+      dd.appendChild(reveal);
+    } else {
+      dd.appendChild(el("code", "", String(value)));
+    }
     const btn = el("button", "copy");
     btn.title = "Copy";
     btn.innerHTML = icon("copy");
     btn.onclick = () => {
       try {
-        navigator.clipboard.writeText(String(value));
+        navigator.clipboard.writeText(isPassword ? atob(value) : String(value));
       } catch (e) {
         /* clipboard blocked */
       }

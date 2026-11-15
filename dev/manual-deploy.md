@@ -4,9 +4,7 @@ Use this if CloudFormation can't create the stack (for example, because of permi
 
 > Doing this by hand uses **your** permissions, just as CloudFormation does. If CloudFormation was refused a step (often creating IAM roles), the console will refuse it too. Ask an admin to create the IAM role in step 4 with the JSON below, then do the rest yourself.
 
-Build everything in **us-east-1**, the same region as the bucket that holds `lambda-mock-gen.zip`. The names below are the ones used for this deployment (`dq-poc-mock-data-*`). If you use other names, avoid one prefix:
-
-> ⚠️ **Don't start the app bucket's name with `mockgen-`.** The app treats anything named `mockgen-…` as a user dataset, so it would show up in the Datasets modal and could be deleted from there.
+Build everything in **us-east-1**, the same region as the bucket that holds `lambda-mock-gen.zip`. The names below are the ones used for this deployment (`dq-poc-mock-data-*`).
 
 ## 1. Security groups
 
@@ -35,10 +33,14 @@ RDS → Subnet groups → Create. Name it `dq-poc-mock-data-subnets`, then pick 
 
 ## 3. App S3 bucket
 
-The app uses the existing bucket `vgi-cdao-data-quality-poc`, so there's nothing to create. It only writes under two prefixes, and the IAM policy below limits it to them:
+The app uses the existing bucket `vgi-cdao-data-quality-poc`, so there's nothing to create. It never creates or deletes buckets. It only writes under four prefixes, and the IAM policy below limits it to them:
 
+- `mock-data/`: S3 datasets. The prefix you enter is the dataset (`mock-data/<prefix>/part-00000.<format>`).
+- `tables/`: the files behind Glue tables (`tables/<table>/`). Every Glue table goes in the Glue database `mock_data`, which the app creates on first use if it doesn't exist.
 - `dependencies/DB/<name>.json`: one file per Postgres/Redshift database, holding its status, endpoint and credentials. The bucket's default encryption (SSE-S3) encrypts them at rest.
 - `staging/`: Redshift `COPY` files, deleted after each load.
+
+Postgres, Redshift and DynamoDB names are used exactly as entered. The app tags every DynamoDB table it creates (`created-by = mock-data-generator`), and only lists, replaces or deletes tables with that tag. Other tables in the account are never touched.
 
 ## 4. IAM role
 
@@ -101,11 +103,13 @@ IAM → Roles → Create role:
         "dynamodb:CreateTable",
         "dynamodb:DeleteTable",
         "dynamodb:DescribeTable",
+        "dynamodb:TagResource",
+        "dynamodb:ListTagsOfResource",
         "dynamodb:BatchWriteItem",
         "dynamodb:PutItem",
         "dynamodb:Scan"
       ],
-      "Resource": "arn:aws:dynamodb:us-east-1:<ACCOUNT>:table/mockgen-*"
+      "Resource": "arn:aws:dynamodb:us-east-1:<ACCOUNT>:table/*"
     },
     {
       "Effect": "Allow",
@@ -114,51 +118,28 @@ IAM → Roles → Create role:
     },
     {
       "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::vgi-cdao-data-quality-poc"
+    },
+    {
+      "Effect": "Allow",
       "Action": [
-        "s3:CreateBucket",
-        "s3:DeleteBucket",
-        "s3:ListBucket",
         "s3:PutObject",
         "s3:GetObject",
         "s3:DeleteObject"
       ],
       "Resource": [
-        "arn:aws:s3:::mockgen-<ACCOUNT>-*",
-        "arn:aws:s3:::mockgen-<ACCOUNT>-*/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": "s3:ListAllMyBuckets",
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:ListBucket",
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject"
-      ],
-      "Resource": [
-        "arn:aws:s3:::vgi-cdao-data-quality-poc",
+        "arn:aws:s3:::vgi-cdao-data-quality-poc/mock-data/*",
+        "arn:aws:s3:::vgi-cdao-data-quality-poc/tables/*",
         "arn:aws:s3:::vgi-cdao-data-quality-poc/dependencies/*",
         "arn:aws:s3:::vgi-cdao-data-quality-poc/staging/*"
       ]
     },
     {
       "Effect": "Allow",
-      "Action": "glue:GetDatabases",
-      "Resource": [
-        "arn:aws:glue:us-east-1:<ACCOUNT>:catalog",
-        "arn:aws:glue:us-east-1:<ACCOUNT>:database/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
       "Action": [
-        "glue:CreateDatabase",
         "glue:GetDatabase",
+        "glue:CreateDatabase",
         "glue:GetTable",
         "glue:GetTables",
         "glue:CreateTable",
@@ -166,8 +147,8 @@ IAM → Roles → Create role:
       ],
       "Resource": [
         "arn:aws:glue:us-east-1:<ACCOUNT>:catalog",
-        "arn:aws:glue:us-east-1:<ACCOUNT>:database/mockgen_*",
-        "arn:aws:glue:us-east-1:<ACCOUNT>:table/mockgen_*/*"
+        "arn:aws:glue:us-east-1:<ACCOUNT>:database/mock_data",
+        "arn:aws:glue:us-east-1:<ACCOUNT>:table/mock_data/*"
       ]
     },
     {
@@ -251,7 +232,6 @@ Each settings page has its own **Save**; changes are lost if you leave the page 
 | Key | Value |
 |---|---|
 | `APP_BUCKET` | `vgi-cdao-data-quality-poc` |
-| `BUCKET_PREFIX` | `mockgen-<ACCOUNT>-` (keep the trailing dash) |
 | `DB_SUBNET_GROUP` | `dq-poc-mock-data-subnets` |
 | `DB_SECURITY_GROUP` | the **ID** of `dq-poc-mock-data-db` (`sg-…`) |
 | `SUBNET_IDS` | `subnet-a,subnet-b,subnet-c` (comma-separated, no spaces) |

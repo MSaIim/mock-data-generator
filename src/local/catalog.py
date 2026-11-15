@@ -110,22 +110,20 @@ def catalog(dbs: list) -> dict:
         for name, columns, count in sqlite_details(backend.DYNAMO_PATH):
             datasets.append({"source": "dynamodb", "name": name, "location": name, "dest": {"table": name}, "columns": columns, "rows": count})
 
-    # S3: every folder holding part files
-    for bucket in backend.list_buckets():
-        root = os.path.join(backend.S3_DIR, bucket)
-        for folder, _, files in os.walk(root):
-            if not any(name.startswith("part-") for name in files):
-                continue
-            prefix, _, table = os.path.relpath(folder, root).replace(os.sep, "/").rpartition("/")
-            datasets.append(
-                {
-                    "source": "s3",
-                    "name": table,
-                    "location": f"s3://{bucket}/{prefix + '/' if prefix else ''}{table}/",
-                    "dest": {"bucket": bucket, "prefix": prefix, "table": table},
-                    **folder_stats(folder),
-                }
-            )
+    # S3: every folder under mock-data/ holding part files
+    for folder, _, files in os.walk(backend.S3_ROOT):
+        if folder == backend.S3_ROOT.rstrip(os.sep) or not any(name.startswith("part-") for name in files):
+            continue
+        prefix = os.path.relpath(folder, backend.S3_ROOT).replace(os.sep, "/")
+        datasets.append(
+            {
+                "source": "s3",
+                "name": prefix,
+                "location": folder,
+                "dest": {"prefix": prefix},
+                **folder_stats(folder),
+            }
+        )
 
     # Glue: catalog entries in the metadata store
     for entry in meta.scan("GLUE#"):
@@ -134,8 +132,8 @@ def catalog(dbs: list) -> dict:
             {
                 "source": "glue",
                 "name": entry["table"],
-                "location": f"{entry['database']}.{entry['table']} → {entry['folder']}",
-                "dest": {"database": entry["database"], "table": entry["table"]},
+                "location": f"{backend.GLUE_DATABASE}.{entry['table']} → {entry['folder']}",
+                "dest": {"table": entry["table"]},
                 "columns": [{"name": c["name"], "type": TYPES[c["type"]]["glue"]} for c in entry["columns"]],
                 **stats,
                 "format": entry["format"],
@@ -176,7 +174,7 @@ def sample(dest: dict) -> dict:
         return folder_sample(backend.dataset_folder(dest), False)
 
     # Glue: the folder its catalog entry points at
-    entry = meta.get(f"GLUE#{dest['database']}#{dest['table']}")
+    entry = meta.get(f"GLUE#{dest['table']}")
     if entry is None:
-        raise ValueError(f"Glue table {dest['database']}.{dest['table']} doesn't exist")
+        raise ValueError(f"Glue table {backend.GLUE_DATABASE}.{dest['table']} doesn't exist")
     return folder_sample(entry["folder"], True)

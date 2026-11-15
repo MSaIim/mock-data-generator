@@ -1118,6 +1118,27 @@ label {
   margin-left: 6px;
 }
 
+/* Admin database rows expand into a details row */
+.table tr.expandable {
+  cursor: pointer;
+}
+
+.table tr.expandable td:first-child::before {
+  content: "▸";
+  display: inline-block;
+  width: 1.2em;
+  color: var(--muted);
+}
+
+.table tr.expandable.open td:first-child::before {
+  content: "▾";
+}
+
+.table tr.db-detail td {
+  padding-top: 4px;
+  padding-bottom: 16px;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

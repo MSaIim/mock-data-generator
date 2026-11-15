@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -19,18 +20,26 @@ from data.generator import TYPES
 
 REGION = os.environ["AWS_REGION"]
 APP_BUCKET = os.environ["APP_BUCKET"]
-# Everything the app stages goes under this prefix, so the app bucket can be shared
-STAGING_PREFIX = "staging/"
-BUCKET_PREFIX = os.environ["BUCKET_PREFIX"]
 REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
-DYNAMO_PREFIX = "mockgen-"
-GLUE_PREFIX = "mockgen_"
+
+# The app only writes under these prefixes of the app bucket (no other buckets)
+STAGING_PREFIX = "staging/"
+DATA_PREFIX = "mock-data/"
+TABLES_PREFIX = "tables/"
+S3_ROOT = f"s3://{APP_BUCKET}/{DATA_PREFIX}"
+GLUE_ROOT = f"s3://{APP_BUCKET}/{TABLES_PREFIX}"
+
+# Every Glue table goes in this one database
+GLUE_DATABASE = "mock_data"
+
+# Tag on every DynamoDB table the app creates. Only tagged tables can be listed, replaced or deleted
+APP_TAG = {"Key": "created-by", "Value": "mock-data-generator"}
 
 # Size of each multi-row Postgres INSERT
 PG_STATEMENT_CHARS = 1000000
 
-# Dataset files look like <prefix>/<table>/part-00000.<ext>
-PART_RE = re.compile(r"^(?:(.+)/)?([^/]+)/part-\d{5}\.[a-z]+$")
+# Dataset files look like <folder>/part-00000.<ext>; the folder (S3: the prefix) is the dataset
+PART_RE = re.compile(r"^(.+)/part-\d{5}\.[a-z]+$")
 
 # Every schema and its tables (Postgres and Redshift), excluding system schemas
 SCHEMAS_SQL = (
@@ -99,7 +108,8 @@ def pg_connect(db: dict) -> pg8000.native.Connection:
         try:
             return pg8000.native.Connection(
                 user=db["username"],
-                password=db["password"],
+                # Stored base64-encoded (see databases.create_database)
+                password=base64.b64decode(db["password"]).decode(),
                 host=db["host"],
                 port=int(db["port"]),
                 database=db["database"],
@@ -224,10 +234,10 @@ def recreate_sql(dest: dict, columns: list) -> list:
 # =================================================
 
 
-# Folder of a dataset inside its bucket
+# Folder of a dataset inside the app bucket
 def dataset_folder(dest: dict) -> str:
     """
-    Build the key prefix of a dataset: <prefix>/<table>/.
+    Build the key prefix of a dataset: mock-data/<prefix>/ for S3, tables/<table>/ for Glue.
 
     Arguments:
         dest (dict): validated destination
@@ -235,13 +245,15 @@ def dataset_folder(dest: dict) -> str:
     Returns:
         str: key prefix ending with /
     """
-    return f"{dest['prefix']}/{dest['table']}/" if dest["prefix"] else f"{dest['table']}/"
+    if dest["source"] == "glue":
+        return f"{TABLES_PREFIX}{dest['table']}/"
+    return f"{DATA_PREFIX}{dest['prefix']}/"
 
 
 # Delete every object under a prefix
 def delete_prefix(bucket: str, prefix: str) -> None:
     """
-    Delete all objects under a prefix (use "" for the whole bucket).
+    Delete all objects under a prefix.
 
     Arguments:
         bucket (str): bucket name
@@ -268,30 +280,10 @@ def delete_dataset(bucket: str, folder: str) -> None:
             s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
 
 
-# Whether a bucket exists
-def bucket_exists(bucket: str) -> bool:
-    """
-    Check whether a bucket exists.
-
-    Arguments:
-        bucket (str): full bucket name
-
-    Returns:
-        bool: True if it exists
-    """
-    try:
-        s3.head_bucket(Bucket=bucket)
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] in ("404", "NoSuchBucket"):
-            return False
-        raise
-
-
 # Write a dataset's part files, replacing the old ones
 def write_dataset(dest: dict, columns: list, batches, hive_csv: bool) -> tuple:
     """
-    Write one part file per batch to s3://<bucket>/<prefix>/<table>/, creating the bucket if needed.
+    Write one part file per batch to the dataset's folder in the app bucket.
 
     Arguments:
         dest (dict): validated destination
@@ -300,26 +292,74 @@ def write_dataset(dest: dict, columns: list, batches, hive_csv: bool) -> tuple:
         hive_csv (bool): write CSV for Athena (see formats.encode)
 
     Returns:
-        tuple: (bucket, folder, number of part files)
+        tuple: (folder, number of part files)
     """
-    bucket = BUCKET_PREFIX + dest["bucket"]
-
-    # Create the bucket the first time it is used
-    if not bucket_exists(bucket):
-        if REGION == "us-east-1":
-            s3.create_bucket(Bucket=bucket)
-        else:
-            s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-
     # Replace old part files with one new file per batch
     folder = dataset_folder(dest)
-    delete_dataset(bucket, folder)
+    delete_dataset(APP_BUCKET, folder)
     parts = 0
     for rows in batches:
         body = formats.encode(dest["format"], columns, rows, hive_csv)
-        s3.put_object(Bucket=bucket, Key=f"{folder}part-{parts:05d}.{dest['format']}", Body=body)
+        s3.put_object(Bucket=APP_BUCKET, Key=f"{folder}part-{parts:05d}.{dest['format']}", Body=body)
         parts += 1
-    return bucket, folder, parts
+    return folder, parts
+
+
+# =================================================
+# DYNAMODB HELPERS
+# =================================================
+
+
+# Whether a DynamoDB table exists, and whether this app created it
+def dynamo_owner(name: str) -> str:
+    """
+    Check who owns a DynamoDB table, by the app's tag.
+
+    Arguments:
+        name (str): table name
+
+    Returns:
+        str: "missing", "app" (created by this app) or "other"
+    """
+    try:
+        arn = dynamo.describe_table(TableName=name)["Table"]["TableArn"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            return "missing"
+        raise
+    return "app" if APP_TAG in dynamo.list_tags_of_resource(ResourceArn=arn).get("Tags", []) else "other"
+
+
+# Refuse to touch a DynamoDB table this app didn't create
+def require_app_table(name: str) -> None:
+    """
+    Raise unless the table exists and carries the app's tag.
+
+    Arguments:
+        name (str): table name
+    """
+    owner = dynamo_owner(name)
+    if owner == "missing":
+        raise ValueError(f"DynamoDB table {name} doesn't exist")
+    if owner == "other":
+        raise ValueError(f"DynamoDB table {name} wasn't created by this app, so it can't be used here")
+
+
+# Every DynamoDB table this app created
+def app_tables() -> list:
+    """
+    List the tagged DynamoDB tables with their descriptions.
+
+    Returns:
+        list: DescribeTable "Table" dicts
+    """
+    tables = []
+    for page in dynamo.get_paginator("list_tables").paginate():
+        for name in page["TableNames"]:
+            table = dynamo.describe_table(TableName=name)["Table"]
+            if APP_TAG in dynamo.list_tags_of_resource(ResourceArn=table["TableArn"]).get("Tags", []):
+                tables.append(table)
+    return tables
 
 
 # =================================================
@@ -387,21 +427,22 @@ def write(dest: dict, columns: list, batches) -> dict:
             delete_prefix(APP_BUCKET, staging)
         return {"table": f"{dest['schema']}.{dest['table']}"}
 
-    # DynamoDB: recreate the table, then write each batch. Every item gets a uuid "pk"
+    # DynamoDB: recreate the table (only if this app made it), then write each batch. Every item gets a uuid "pk"
     if source == "dynamodb":
-        name = DYNAMO_PREFIX + dest["table"]
+        name = dest["table"]
         wait = {"Delay": 2, "MaxAttempts": 90}
-        try:
+        owner = dynamo_owner(name)
+        if owner == "other":
+            raise ValueError(f"DynamoDB table {name} already exists and wasn't created by this app, so it can't be replaced. Pick another name")
+        if owner == "app":
             dynamo.delete_table(TableName=name)
             dynamo.get_waiter("table_not_exists").wait(TableName=name, WaiterConfig=wait)
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "ResourceNotFoundException":
-                raise
         dynamo.create_table(
             TableName=name,
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
+            Tags=[APP_TAG],
         )
         dynamo.get_waiter("table_exists").wait(TableName=name, WaiterConfig=wait)
         table = dynamo_resource.Table(name)
@@ -418,17 +459,20 @@ def write(dest: dict, columns: list, batches) -> dict:
 
     # S3: part files in the chosen format
     if source == "s3":
-        bucket, folder, parts = write_dataset(dest, columns, batches, False)
-        return {"type": "s3", "uri": f"s3://{bucket}/{folder}", "format": dest["format"], "part_files": parts, "region": REGION}
+        folder, parts = write_dataset(dest, columns, batches, False)
+        return {"type": "s3", "uri": f"s3://{APP_BUCKET}/{folder}", "format": dest["format"], "part_files": parts, "region": REGION}
 
-    # Glue: part files in S3 plus a catalog table over them (Athena-readable)
-    database = GLUE_PREFIX + dest["database"]
-    bucket, folder, parts = write_dataset(dest, columns, batches, True)
+    # Glue: part files under tables/ plus a catalog table over them (Athena-readable)
+    database = GLUE_DATABASE
+    folder, parts = write_dataset(dest, columns, batches, True)
+    location = f"s3://{APP_BUCKET}/{folder}"
+    # Create the Glue database the first time it's needed
     try:
-        glue.create_database(DatabaseInput={"Name": database})
+        glue.get_database(Name=database)
     except ClientError as e:
-        if e.response["Error"]["Code"] != "AlreadyExistsException":
+        if e.response["Error"]["Code"] != "EntityNotFoundException":
             raise
+        glue.create_database(DatabaseInput={"Name": database})
     try:
         glue.delete_table(DatabaseName=database, Name=dest["table"])
     except ClientError as e:
@@ -448,7 +492,7 @@ def write(dest: dict, columns: list, batches) -> dict:
             "Parameters": params,
             "StorageDescriptor": {
                 "Columns": [{"Name": c["name"], "Type": TYPES[c["type"]]["glue"]} for c in columns],
-                "Location": f"s3://{bucket}/{folder}",
+                "Location": location,
                 "InputFormat": fmt["input"],
                 "OutputFormat": fmt["output"],
                 "SerdeInfo": {"SerializationLibrary": fmt["serde"], "Parameters": fmt["params"]},
@@ -459,7 +503,7 @@ def write(dest: dict, columns: list, batches) -> dict:
         "type": "glue",
         "database": database,
         "table": dest["table"],
-        "location": f"s3://{bucket}/{folder}",
+        "location": location,
         "format": dest["format"],
         "part_files": parts,
         "region": REGION,
@@ -472,37 +516,6 @@ def write(dest: dict, columns: list, batches) -> dict:
 # =================================================
 
 
-# List the mock data buckets
-def list_buckets() -> list:
-    """
-    List buckets created by this tool.
-
-    Returns:
-        list: short bucket names (without BUCKET_PREFIX)
-    """
-    names = []
-    for bucket in s3.list_buckets()["Buckets"]:
-        if bucket["Name"].startswith(BUCKET_PREFIX):
-            names.append(bucket["Name"][len(BUCKET_PREFIX) :])
-    return sorted(names)
-
-
-# List the mock data Glue databases
-def list_glue_databases() -> list:
-    """
-    List Glue databases created by this tool.
-
-    Returns:
-        list: short database names (without GLUE_PREFIX)
-    """
-    names = []
-    for page in glue.get_paginator("get_databases").paginate():
-        for db in page["DatabaseList"]:
-            if db["Name"].startswith(GLUE_PREFIX):
-                names.append(db["Name"][len(GLUE_PREFIX) :])
-    return sorted(names)
-
-
 # What already exists at a location, for the dropdowns
 def browse(dest: dict) -> dict:
     """
@@ -512,7 +525,7 @@ def browse(dest: dict) -> dict:
         dest (dict): validated destination without a table
 
     Returns:
-        dict: {"schemas": {schema: [tables]}} for SQL, {"datasets": {prefix: [tables]}} for s3,
+        dict: {"schemas": {schema: [tables]}} for SQL, {"datasets": [prefixes]} for s3,
               {"tables": [names]} for dynamodb and glue
     """
     source = dest["source"]
@@ -527,33 +540,24 @@ def browse(dest: dict) -> dict:
                 schemas[schema].append(table)
         return {"schemas": schemas}
 
-    # DynamoDB tables made by this tool
+    # DynamoDB tables made by this app
     if source == "dynamodb":
-        tables = []
-        for page in dynamo.get_paginator("list_tables").paginate():
-            for name in page["TableNames"]:
-                if name.startswith(DYNAMO_PREFIX):
-                    tables.append(name[len(DYNAMO_PREFIX) :])
-        return {"tables": tables}
+        return {"tables": [table["TableName"] for table in app_tables()]}
 
-    # S3: datasets grouped by prefix, found from their part files
+    # S3: every prefix under mock-data/ that holds part files
     if source == "s3":
-        datasets = {}
-        bucket = BUCKET_PREFIX + dest["bucket"]
-        if bucket_exists(bucket):
-            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
-                for obj in page.get("Contents", []):
-                    match = PART_RE.match(obj["Key"])
-                    if match:
-                        tables = datasets.setdefault(match.group(1) or "", [])
-                        if match.group(2) not in tables:
-                            tables.append(match.group(2))
+        datasets = []
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=APP_BUCKET, Prefix=DATA_PREFIX):
+            for obj in page.get("Contents", []):
+                match = PART_RE.match(obj["Key"][len(DATA_PREFIX) :])
+                if match and match.group(1) not in datasets:
+                    datasets.append(match.group(1))
         return {"datasets": datasets}
 
-    # Glue: tables in the database
+    # Glue: tables in the mock_data database (none yet if it doesn't exist)
     tables = []
     try:
-        for page in glue.get_paginator("get_tables").paginate(DatabaseName=GLUE_PREFIX + dest["database"]):
+        for page in glue.get_paginator("get_tables").paginate(DatabaseName=GLUE_DATABASE):
             for table in page["TableList"]:
                 tables.append(table["Name"])
     except ClientError as e:
@@ -576,33 +580,19 @@ def delete_table(dest: dict) -> None:
         dest (dict): validated destination with a table
     """
     source = dest["source"]
-    qualified = f'"{dest.get("schema")}"."{dest["table"]}"'
+    qualified = f'"{dest.get("schema")}"."{dest.get("table")}"'
     if source == "postgres":
         pg_run(dest["db"], [f"DROP TABLE IF EXISTS {qualified}"])
     elif source == "redshift":
         rs_exec(dest["db"], [f"DROP TABLE IF EXISTS {qualified}"])
     elif source == "dynamodb":
-        dynamo.delete_table(TableName=DYNAMO_PREFIX + dest["table"])
+        require_app_table(dest["table"])
+        dynamo.delete_table(TableName=dest["table"])
     elif source == "s3":
-        delete_dataset(BUCKET_PREFIX + dest["bucket"], dataset_folder(dest))
+        delete_dataset(APP_BUCKET, dataset_folder(dest))
     elif source == "glue":
-        database = GLUE_PREFIX + dest["database"]
-        location = glue.get_table(DatabaseName=database, Name=dest["table"])["Table"]["StorageDescriptor"]["Location"]
-        # Only delete files that live in one of this tool's buckets
-        if location.startswith("s3://" + BUCKET_PREFIX):
-            bucket, _, folder = location[len("s3://") :].partition("/")
-            delete_dataset(bucket, folder)
-        glue.delete_table(DatabaseName=database, Name=dest["table"])
-
-
-# Delete a mock data bucket and everything in it
-def delete_bucket(bucket_name: str) -> None:
-    """
-    Empty and delete a bucket created by this tool.
-
-    Arguments:
-        bucket_name (str): validated short bucket name
-    """
-    bucket = BUCKET_PREFIX + bucket_name
-    delete_prefix(bucket, "")
-    s3.delete_bucket(Bucket=bucket)
+        location = glue.get_table(DatabaseName=GLUE_DATABASE, Name=dest["table"])["Table"]["StorageDescriptor"]["Location"]
+        # Only delete files under the app bucket's tables/ prefix
+        if location.startswith(GLUE_ROOT):
+            delete_dataset(APP_BUCKET, location[len(f"s3://{APP_BUCKET}/") :])
+        glue.delete_table(DatabaseName=GLUE_DATABASE, Name=dest["table"])

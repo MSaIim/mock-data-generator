@@ -136,12 +136,6 @@ async function showDataset(d) {
   remove.type = "button";
   remove.onclick = () => deleteDataset(d);
   actions.appendChild(remove);
-  if (d.source === "s3") {
-    const removeBucket = el("button", "btn danger small", "Delete bucket");
-    removeBucket.type = "button";
-    removeBucket.onclick = () => deleteBucket(d.dest.bucket);
-    actions.appendChild(removeBucket);
-  }
   head.appendChild(actions);
   detail.appendChild(head);
   detail.appendChild(el("p", "error-text ds-error"));
@@ -222,18 +216,6 @@ async function deleteDataset(d) {
   }
   try {
     await api("delete_table", { source: d.source, ...d.dest });
-    await afterDelete();
-  } catch (e) {
-    showDeleteError(e.message);
-  }
-}
-
-async function deleteBucket(bucket) {
-  if (!confirm(`Delete bucket ${bucket} and every dataset in it? This can't be undone.`)) {
-    return;
-  }
-  try {
-    await api("delete_bucket", { bucket });
     await afterDelete();
   } catch (e) {
     showDeleteError(e.message);
