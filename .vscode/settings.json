@@ -1,0 +1,29 @@
+{
+    "python.analysis.extraPaths": [
+        "./src"
+    ],
+    "yaml.customTags": [
+        "!Ref scalar",
+        "!Sub scalar",
+        "!Sub sequence",
+        "!GetAtt scalar",
+        "!GetAtt sequence",
+        "!If sequence",
+        "!Not sequence",
+        "!Equals sequence",
+        "!And sequence",
+        "!Or sequence",
+        "!Join sequence",
+        "!Select sequence",
+        "!Split sequence",
+        "!FindInMap sequence",
+        "!Base64 scalar",
+        "!Cidr sequence",
+        "!GetAZs scalar",
+        "!ImportValue scalar",
+        "!Condition scalar"
+    ],
+    "yaml.schemaStore.enable": false,
+    "black-formatter.args": ["--line-length", "150"],
+    "prettier.configPath": "./config/.prettierrc",
+}

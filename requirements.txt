@@ -1,0 +1,17 @@
+# Pinned dependencies for local runs (pip install -r requirements.txt) and the Lambda build (build.py).
+# boto3 is not listed: the Lambda runtime provides it, and local mode never imports it.
+
+# Direct dependencies
+faker==33.1.0
+pg8000==1.31.2
+pyarrow==26.0.1
+fastavro==1.13.1
+
+# Kept below 3: the bundled copy shadows the one Lambda's built-in botocore needs
+python-dateutil==2.9.0.post0
+
+# Transitive dependencies, pinned for repeatable builds
+typing_extensions==4.16.0
+scramp==1.5.0
+asn1crypto==1.5.1
+six==1.17.0

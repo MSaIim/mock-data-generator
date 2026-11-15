@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mock Data Generator</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233563e9'/%3E%3Cg fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='7' y='7' width='7' height='7' rx='1.5'/%3E%3Crect x='18' y='7' width='7' height='7' rx='1.5'/%3E%3Crect x='7' y='18' width='7' height='7' rx='1.5'/%3E%3Cpath d='M18 21.5h7M21.5 18v7'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <script>
+      // Apply a saved theme before the first paint so there's no flash
+      try {
+        const t = localStorage.getItem("mockgen-theme");
+        if (t) {
+          document.documentElement.dataset.theme = t;
+        }
+      } catch (e) {}
+    </script>
+  </head>
+
+  <body>
+    <!-- ================= HEADER ================= -->
+    <header class="topbar">
+      <div class="bar-inner">
+        <div class="brand">
+          <svg class="icon logo" viewBox="0 0 24 24">
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <path d="M14 17.5h7M17.5 14v7" />
+          </svg>
+          <span class="name">Mock Data Generator</span>
+          <span id="local-badge" class="badge accent" hidden>Local</span>
+        </div>
+        <nav class="stepper" id="stepper" aria-label="Progress" hidden>
+          <div class="stepper-track">
+            <div class="stepper-fill" id="stepper-fill"></div>
+          </div>
+          <button class="step" data-step="1"><span class="step-dot">1</span><span class="step-label">Destination</span></button>
+          <button class="step" data-step="2"><span class="step-dot">2</span><span class="step-label">Columns</span></button>
+          <button class="step" data-step="3"><span class="step-dot">3</span><span class="step-label">Generate</span></button>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-btn" id="theme-btn" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
+          <button class="btn ghost" id="datasets-btn" title="Browse datasets" hidden>
+            <span class="btn-icon"></span><span class="label">Datasets</span>
+          </button>
+          <button class="btn ghost" id="admin-btn" title="Admin" hidden><span class="btn-icon"></span><span class="label">Admin</span></button>
+          <span class="user" id="whoami"></span>
+          <button class="btn ghost" id="logout-btn" title="Sign out" hidden><span class="btn-icon"></span><span class="label">Sign out</span></button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ================= LOGIN ================= -->
+    <div id="login-view" class="center" hidden>
+      <form class="card login-card" id="login-form">
+        <div>
+          <h2 id="login-title">Sign in</h2>
+          <p class="sub" id="setup-hint" hidden>First run: create the admin account. This can only be done once.</p>
+        </div>
+        <div class="field"><label for="login-user">Username</label><input id="login-user" autocomplete="username" /></div>
+        <div class="field"><label for="login-pass">Password</label><input id="login-pass" type="password" autocomplete="current-password" /></div>
+        <button class="btn primary" id="login-btn" type="submit">Sign in</button>
+        <p class="error-text" id="login-error"></p>
+      </form>
+    </div>
+
+    <!-- ================= WIZARD ================= -->
+    <div id="wizard-view" class="layout" hidden>
+      <main class="main">
+        <!-- Page 1: destination -->
+        <section class="card page" data-page="1">
+          <div>
+            <h2>Where should the data go?</h2>
+            <p class="sub">Pick a data source, then where in it. Dropdowns list what already exists; type a new name to create it.</p>
+          </div>
+          <div class="source-cards" id="source-cards"></div>
+
+          <div class="fields" id="dest-fields" hidden>
+            <div class="field" data-field="database">
+              <label for="f-database">Database</label>
+              <select id="f-database"></select>
+              <p class="help">Databases are created by an admin.</p>
+              <p class="error-text" id="e-database"></p>
+            </div>
+            <div class="field" data-field="glueDatabase">
+              <label for="f-glueDatabase">Glue database</label>
+              <input id="f-glueDatabase" list="l-glueDatabase" placeholder="analytics" autocomplete="off" />
+              <datalist id="l-glueDatabase"></datalist>
+              <p class="error-text" id="e-glueDatabase"></p>
+            </div>
+            <div class="field" data-field="schema">
+              <label for="f-schema">Schema</label>
+              <input id="f-schema" list="l-schema" placeholder="public" autocomplete="off" />
+              <datalist id="l-schema"></datalist>
+              <p class="error-text" id="e-schema"></p>
+            </div>
+            <div class="field" data-field="bucket">
+              <div class="field-head"><label for="f-bucket">Bucket</label><span id="bucket-badge"></span></div>
+              <input id="f-bucket" list="l-bucket" placeholder="my-bucket" autocomplete="off" />
+              <datalist id="l-bucket"></datalist>
+              <p class="error-text" id="e-bucket"></p>
+            </div>
+            <div class="field" data-field="prefix">
+              <label for="f-prefix">Prefix <span class="muted">(optional)</span></label>
+              <input id="f-prefix" list="l-prefix" placeholder="raw/sales" autocomplete="off" />
+              <datalist id="l-prefix"></datalist>
+              <p class="error-text" id="e-prefix"></p>
+            </div>
+            <div class="field" data-field="table">
+              <div class="field-head"><label for="f-table" id="table-label">Table</label><span id="table-badge"></span></div>
+              <input id="f-table" list="l-table" placeholder="customers" autocomplete="off" />
+              <datalist id="l-table"></datalist>
+              <p class="error-text" id="e-table"></p>
+            </div>
+            <div class="field wide" data-field="format">
+              <label>Dataset type</label>
+              <div class="segmented" id="format-buttons"></div>
+              <p class="help" id="format-help"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Page 2: columns -->
+        <section class="card page" data-page="2" hidden>
+          <div class="page-head">
+            <div>
+              <h2>Define the columns</h2>
+              <p class="sub">Set each column's type and how much of it should be null or junk.</p>
+            </div>
+            <div class="toolbar">
+              <div class="field narrow"><label for="col-count">Columns</label><input id="col-count" type="number" min="1" max="100" /></div>
+              <button class="btn secondary" id="add-col-btn" type="button">+ Add column</button>
+              <button class="btn secondary" id="auto-cols-btn" type="button" title="Random columns, types and junk">
+                <span class="btn-icon"></span>Auto-generate
+              </button>
+            </div>
+          </div>
+          <div class="col-grid">
+            <div class="col-row head">
+              <span class="col-index">#</span><span class="col-name-head">Name</span><span>Type</span><span>Null %</span><span>Junk %</span
+              ><span></span>
+            </div>
+            <div class="col-grid" id="columns"></div>
+          </div>
+          <div class="notice" id="junk-hint"></div>
+        </section>
+
+        <!-- Page 3: generate -->
+        <section class="card page" data-page="3" hidden>
+          <div>
+            <h2>Generate</h2>
+            <p class="sub">Anything that doesn't exist yet is created first. An existing table is replaced.</p>
+          </div>
+          <div class="fields">
+            <div class="field"><label for="rows">Rows</label><input id="rows" type="number" min="1" max="100000" /></div>
+            <div class="field">
+              <label>Batches</label>
+              <label class="switch"><input type="checkbox" id="batching" /><span class="track"></span><span>Generate in batches</span></label>
+            </div>
+            <div class="field" id="batch-size-field" hidden>
+              <label for="batch-size">Rows per batch</label>
+              <input id="batch-size" type="number" min="1" />
+              <p class="help" id="batch-help"></p>
+            </div>
+          </div>
+          <div>
+            <h3 class="section-title">What will happen</h3>
+            <ul class="plan" id="plan"></ul>
+          </div>
+          <div id="gen-running" hidden>
+            <div class="progress">
+              <div class="bar"></div>
+            </div>
+            <p class="help" id="gen-status"></p>
+          </div>
+          <div class="card result-card" id="result-card" hidden>
+            <div class="page-head">
+              <h3 id="result-title"></h3>
+              <span class="badge new">Done</span>
+            </div>
+            <dl class="kv" id="result-kv"></dl>
+          </div>
+        </section>
+      </main>
+
+      <!-- Right panel: everything selected so far -->
+      <aside class="card panel">
+        <div class="panel-section">
+          <div class="panel-title">Destination <span id="p-status"></span></div>
+          <div id="p-dest" class="muted">Pick a data source to start.</div>
+        </div>
+        <div class="panel-section">
+          <div class="panel-title">Columns <span class="count" id="p-col-count"></span></div>
+          <div class="col-summary" id="p-columns"></div>
+        </div>
+        <div class="panel-section">
+          <div class="panel-title">Generation</div>
+          <dl class="kv" id="p-gen"></dl>
+        </div>
+        <div class="panel-section">
+          <div class="panel-title">Preview <span class="muted lower">first 10 rows</span></div>
+          <div id="p-preview"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Footer navigation (wizard only), always visible at the bottom -->
+    <footer class="footbar" id="footbar" hidden>
+      <div class="bar-inner">
+        <button class="btn secondary" id="foot-back"><span class="btn-icon"></span>Back</button>
+        <p class="foot-msg" id="foot-msg"></p>
+        <div class="foot-actions">
+          <button class="btn secondary" id="foot-new" hidden>New dataset</button>
+          <button class="btn primary" id="foot-next"></button>
+        </div>
+      </div>
+    </footer>
+
+    <!-- ================= ADMIN ================= -->
+    <div id="admin-view" class="admin" hidden>
+      <section class="card page">
+        <div class="page-head">
+          <div>
+            <h2>Databases</h2>
+            <p class="sub">Creating takes about 5–15 minutes. Press Refresh to check whether it's up and get the credentials.</p>
+          </div>
+          <button class="btn secondary" id="back-btn">← Back to generator</button>
+        </div>
+        <div class="toolbar">
+          <div class="field grow"><label for="db-name">Name</label><input id="db-name" placeholder="analytics" /></div>
+          <div class="field grow">
+            <label for="db-engine">Engine</label>
+            <select id="db-engine">
+              <option value="postgres">Aurora PostgreSQL</option>
+              <option value="redshift">Redshift Serverless</option>
+            </select>
+          </div>
+          <button class="btn primary" id="create-db-btn">Create database</button>
+        </div>
+        <p class="help" id="db-status"></p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Engine</th>
+                <th>Status</th>
+                <th>Created by</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="databases"></tbody>
+          </table>
+        </div>
+        <dl class="kv" id="db-info" hidden></dl>
+      </section>
+
+      <section class="card page">
+        <h2>Users</h2>
+        <div class="toolbar">
+          <div class="field grow"><label for="new-user">Username</label><input id="new-user" autocomplete="off" /></div>
+          <div class="field grow"><label for="new-pass">Password</label><input id="new-pass" type="password" autocomplete="new-password" /></div>
+          <div class="field grow">
+            <label for="new-role">Role</label>
+            <select id="new-role">
+              <option value="user">User</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <button class="btn primary" id="create-user-btn">Add user</button>
+        </div>
+        <p class="help" id="user-status"></p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="users"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= DATASETS MODAL ================= -->
+    <div class="modal-backdrop" id="datasets-modal" hidden>
+      <div class="modal" id="datasets-dialog" role="dialog" aria-modal="true" aria-labelledby="ds-title">
+        <div class="modal-head">
+          <h2 id="ds-title">Datasets</h2>
+          <input id="ds-search" type="search" placeholder="Filter by name or location" aria-label="Filter datasets" />
+          <button class="icon-btn" id="ds-refresh" title="Refresh" aria-label="Refresh"></button>
+          <button class="icon-btn" id="ds-close" title="Close" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="ds-list" id="ds-list"></div>
+          <div class="ds-detail" id="ds-detail"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/core.js"></script>
+    <script src="/admin.js"></script>
+    <script src="/datasets.js"></script>
+    <script src="/wizard.js"></script>
+  </body>
+</html>
