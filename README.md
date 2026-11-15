@@ -20,8 +20,8 @@ The first visit asks you to create the admin account. Data goes in `data/`.
 
 ## Deploy to AWS
 
-1. `python build.py` builds `mockgen.zip`, with Linux wheels for the Lambda runtime.
-2. Upload `mockgen.zip` to an S3 bucket.
+1. `python build.py` builds `lambda-mock-gen.zip`, with Linux wheels for the Lambda runtime.
+2. Upload `lambda-mock-gen.zip` to an S3 bucket.
 3. In CloudFormation, create a stack from `template.yaml`. You'll need:
    - the VPC
    - 3 private subnets in 3 AZs, with a NAT gateway

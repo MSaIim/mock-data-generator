@@ -18,10 +18,10 @@ Parameters:
     Description: Network range allowed to open the UI and connect to the databases (e.g. your VPN or office range)
   CodeBucket:
     Type: String
-    Description: S3 bucket where you uploaded mockgen.zip
+    Description: S3 bucket where you uploaded lambda-mock-gen.zip
   CodeKey:
     Type: String
-    Default: mockgen.zip
+    Default: lambda-mock-gen.zip
     Description: S3 key of the code zip
   CertificateArn:
     Type: String

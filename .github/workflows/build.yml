@@ -1,0 +1,31 @@
+# Builds lambda-mock-gen.zip (the Lambda deployment package) and uploads it as a workflow artifact
+name: Build Lambda zip
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # build.py downloads Linux wheels for the Lambda runtime and zips them with src/
+      - name: Build lambda-mock-gen.zip
+        run: python dev/build.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-mock-gen
+          path: lambda-mock-gen.zip
+          if-no-files-found: error

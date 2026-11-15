@@ -19,5 +19,5 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"
 shutil.copytree("src", "build", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "local"))
 
 # Zip with forward-slash paths (PowerShell's Compress-Archive can write backslashes that break Lambda)
-shutil.make_archive("mockgen", "zip", "build")
-print("Built mockgen.zip")
+shutil.make_archive("lambda-mock-gen", "zip", "build")
+print("Built lambda-mock-gen.zip")
