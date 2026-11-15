@@ -2,7 +2,7 @@
 
 Use this if CloudFormation can't create the stack (for example, because of permission errors). These steps create the same resources as `template.yaml`, by hand in the AWS console.
 
-> Doing this by hand uses **your** permissions, just as CloudFormation does. If CloudFormation was refused a step (often creating IAM roles), the console will refuse it too. Ask an admin to create the two IAM roles in step 5 with the JSON below, then do the rest yourself.
+> Doing this by hand uses **your** permissions, just as CloudFormation does. If CloudFormation was refused a step (often creating IAM roles), the console will refuse it too. Ask an admin to create the IAM role in step 5 with the JSON below, then do the rest yourself.
 
 Build everything in the **same region** as the bucket that holds `lambda-mock-gen.zip`. The names below use a `mockdata-` prefix; any names work, with one exception:
 
@@ -45,13 +45,13 @@ DynamoDB → Create table:
 
 S3 → Create bucket. Name it something like `mockdata-staging-<account-id>`. Keep **Block all public access** on.
 
-## 5. IAM roles
+## 5. IAM role
 
-IAM → Roles → Create role.
+One role, `mockdata-role`, used by both the Lambda (to run the app) and Redshift (to read staged files during `COPY`).
 
-### a) `mockdata-redshift-copy`
+IAM → Roles → Create role:
 
-Trusted entity: **Custom trust policy**
+1. Trusted entity: **Custom trust policy**, so all three services can use the role:
 
 ```json
 {
@@ -61,6 +61,7 @@ Trusted entity: **Custom trust policy**
       "Effect": "Allow",
       "Principal": {
         "Service": [
+          "lambda.amazonaws.com",
           "redshift.amazonaws.com",
           "redshift-serverless.amazonaws.com"
         ]
@@ -71,34 +72,34 @@ Trusted entity: **Custom trust policy**
 }
 ```
 
-Inline policy (replace `<STAGING_BUCKET>`):
+2. Skip the "Add permissions" page (no AWS managed policies). Name it `mockdata-role` and create it. Copy its ARN.
+3. Open the role → **Add permissions → Create inline policy → JSON**, and paste the policy below. It's the role's only policy and lists every permission explicitly, including CloudWatch Logs and the network interface permissions the Lambda needs to run in your VPC. Replace `<REGION>`, `<ACCOUNT>`, `<META_TABLE>`, `<STAGING_BUCKET>` and `<ROLE_ARN>` (this role's own ARN: when an admin creates a Redshift database, the app hands this role to Redshift, so it must be allowed to pass itself).
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "LambdaLogs",
       "Effect": "Allow",
-      "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::<STAGING_BUCKET>"
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:<REGION>:<ACCOUNT>:*"
     },
     {
+      "Sid": "LambdaVpcNetworking",
       "Effect": "Allow",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::<STAGING_BUCKET>/*"
-    }
-  ]
-}
-```
-
-### b) `mockdata-lambda`
-
-Trusted entity: AWS service → **Lambda**. Attach the managed policy **AWSLambdaVPCAccessExecutionRole**, then add this inline policy. Replace `<REGION>`, `<ACCOUNT>`, `<META_TABLE>`, `<STAGING_BUCKET>` and `<COPY_ROLE_ARN>` (the ARN of `mockdata-redshift-copy`).
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
+      "Action": [
+        "ec2:CreateNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:AssignPrivateIpAddresses",
+        "ec2:UnassignPrivateIpAddresses"
+      ],
+      "Resource": "*"
+    },
     {
       "Effect": "Allow",
       "Action": [
@@ -223,7 +224,7 @@ Trusted entity: AWS service → **Lambda**. Attach the managed policy **AWSLambd
     {
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "<COPY_ROLE_ARN>"
+      "Resource": "<ROLE_ARN>"
     },
     {
       "Effect": "Allow",
@@ -252,7 +253,7 @@ Trusted entity: AWS service → **Lambda**. Attach the managed policy **AWSLambd
 
 Lambda → Create function → Author from scratch:
 
-1. Name: `mockdata-app`. Runtime **Python 3.13**, architecture **x86_64**. Permissions: **Use an existing role** → `mockdata-lambda`.
+1. Name: `mockdata-app`. Runtime **Python 3.13**, architecture **x86_64**. Permissions: **Use an existing role** → `mockdata-role`.
 2. **Code → Upload from → Amazon S3 location**: paste the S3 URL of `lambda-mock-gen.zip`.
 3. **Runtime settings → Edit**: Handler `app.handler`.
 4. **Configuration → General configuration**: Memory **2048 MB**, Timeout **15 min 0 sec**.
@@ -267,7 +268,7 @@ Lambda → Create function → Author from scratch:
 | `DB_SUBNET_GROUP` | `mockdata-db-subnets` |
 | `DB_SECURITY_GROUP` | the **ID** of `mockdata-db` (`sg-…`) |
 | `SUBNET_IDS` | `subnet-a,subnet-b,subnet-c` (comma-separated, no spaces) |
-| `REDSHIFT_ROLE_ARN` | ARN of `mockdata-redshift-copy` |
+| `REDSHIFT_ROLE_ARN` | ARN of `mockdata-role` |
 | `SECURE_COOKIE` | `false` (`true` if you use HTTPS) |
 | `MOCKGEN_LOCAL` | `false` |
 
