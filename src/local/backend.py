@@ -136,13 +136,13 @@ def public(record: dict) -> dict:
         record (dict): database record
 
     Returns:
-        dict: name, engine, status, error and creator
+        dict: name, engine, status and error
     """
-    return {"name": record["name"], "engine": record["engine"], "status": record["status"], "error": "", "created_by": record["created_by"]}
+    return {"name": record["name"], "engine": record["engine"], "status": record["status"], "error": ""}
 
 
 # =================================================
-# DATABASES (admin)
+# DATABASES
 # The create -> refresh -> available flow matches AWS, it just finishes on the first refresh
 # =================================================
 
@@ -161,14 +161,13 @@ def list_databases() -> list:
 
 
 # Register a new local database
-def create_database(name: str, engine: str, created_by: str) -> dict:
+def create_database(name: str, engine: str) -> dict:
     """
     Register a database. Like AWS it starts as "creating"; refresh_database makes it available.
 
     Arguments:
         name (str): validated database name
         engine (str): postgres or redshift
-        created_by (str): admin username
 
     Returns:
         dict: public record
@@ -179,7 +178,6 @@ def create_database(name: str, engine: str, created_by: str) -> dict:
         "engine": engine,
         "file": f"{engine}-{name}.sqlite",
         "status": "creating",
-        "created_by": created_by,
         "created_at": int(time.time()),
     }
     if not meta.put_new(record):

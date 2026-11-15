@@ -18,7 +18,6 @@ PORT = 8000
 os.makedirs(DATA_DIR, exist_ok=True)
 os.environ["MOCKGEN_LOCAL"] = "true"
 os.environ["MOCKGEN_LOCAL_DIR"] = DATA_DIR
-os.environ["SECURE_COOKIE"] = "false"
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import app  # noqa: E402

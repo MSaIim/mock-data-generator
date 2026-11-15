@@ -2,11 +2,11 @@
 
 Use this if CloudFormation can't create the stack (for example, because of permission errors). These steps create the same resources as `template.yaml`, by hand in the AWS console.
 
-> Doing this by hand uses **your** permissions, just as CloudFormation does. If CloudFormation was refused a step (often creating IAM roles), the console will refuse it too. Ask an admin to create the IAM role in step 5 with the JSON below, then do the rest yourself.
+> Doing this by hand uses **your** permissions, just as CloudFormation does. If CloudFormation was refused a step (often creating IAM roles), the console will refuse it too. Ask an admin to create the IAM role in step 4 with the JSON below, then do the rest yourself.
 
-Build everything in the **same region** as the bucket that holds `lambda-mock-gen.zip`. The names below use a `mockdata-` prefix; any names work, with one exception:
+Build everything in **us-east-1**, the same region as the bucket that holds `lambda-mock-gen.zip`. The names below are the ones used for this deployment (`dq-poc-mock-data-*`). If you use other names, avoid one prefix:
 
-> ⚠️ **Don't start the table or staging bucket names with `mockgen-`.** The app treats anything named `mockgen-…` as a user dataset, so it would show up in the Datasets modal and could be deleted from there.
+> ⚠️ **Don't start the app bucket's name with `mockgen-`.** The app treats anything named `mockgen-…` as a user dataset, so it would show up in the Datasets modal and could be deleted from there.
 
 ## 1. Security groups
 
@@ -14,40 +14,35 @@ EC2 → Security Groups → Create. Put all three in your VPC.
 
 | Name | Inbound port | Source (Type: Custom) |
 |---|---|---|
-| `mockdata-alb` | TCP 80 (443 for HTTPS) | Your allowed network range (AllowedCidr) |
-| `mockdata-lambda` | none | No inbound rules |
-| `mockdata-db` | TCP 5432 | The `mockdata-lambda` security group (type `sg-` or the name in the source box) |
-| `mockdata-db` | TCP 5432 | AllowedCidr |
-| `mockdata-db` | TCP 5439 | AllowedCidr |
+| `dq-poc-mock-data-alb` | TCP 80 (443 for HTTPS) | Your allowed network range (AllowedCidr) |
+| `dq-poc-mock-data-lambda` | none | No inbound rules |
+| `dq-poc-mock-data-db` | TCP 5432 | The `dq-poc-mock-data-lambda` security group (type `sg-` or the name in the source box) |
+| `dq-poc-mock-data-db` | TCP 5432 | AllowedCidr |
+| `dq-poc-mock-data-db` | TCP 5439 | AllowedCidr |
 
 - The Lambda needs no inbound rules: the load balancer invokes it through AWS, not over the network.
-- **AllowedCidr** is the range your users connect *from*. That's your VPC range if they come in through AWS Client VPN or a host inside the VPC. If they come from an office or a VPN that keeps their own addresses, use that range instead.
+- **AllowedCidr** is the range your users connect *from*. That's your VPC range if they come in through AWS Client VPN or a host inside the VPC. If they come from an office or a VPN that keeps their own addresses, use that range instead. For example, if `ipconfig` on the VPN shows `100.127.x.x`, that address must be allowed even if the VPC is `100.124.x.x`. Ask your network admin for the VPN's client range.
 
 **Outbound:** leave the default **All traffic → 0.0.0.0/0** on all three groups.
 
-- `mockdata-lambda` needs it to reach AWS services through the NAT gateway (port 443) and Postgres (5432). Without it, every request times out.
-- If outbound must be tightened, the minimum for `mockdata-lambda` is TCP 443 to `0.0.0.0/0` plus TCP 5432 to the `mockdata-db` group.
-- `mockdata-alb` and `mockdata-db` don't depend on outbound rules. Security groups allow replies to allowed inbound traffic automatically.
+- `dq-poc-mock-data-lambda` needs it to reach AWS services through the NAT gateway (port 443) and Postgres (5432). Without it, every request times out.
+- If outbound must be tightened, the minimum for `dq-poc-mock-data-lambda` is TCP 443 to `0.0.0.0/0` plus TCP 5432 to the `dq-poc-mock-data-db` group.
+- `dq-poc-mock-data-alb` and `dq-poc-mock-data-db` don't depend on outbound rules. Security groups allow replies to allowed inbound traffic automatically.
 
 ## 2. DB subnet group
 
-RDS → Subnet groups → Create. Name it `mockdata-db-subnets`, then pick your VPC and the 3 private subnets.
+RDS → Subnet groups → Create. Name it `dq-poc-mock-data-subnets`, then pick your VPC and the 3 private subnets.
 
-## 3. DynamoDB table
+## 3. App S3 bucket
 
-DynamoDB → Create table:
+The app uses the existing bucket `vgi-cdao-data-quality-poc`, so there's nothing to create. It only writes under two prefixes, and the IAM policy below limits it to them:
 
-- Name: `mockdata-meta`
-- Partition key: `pk` (String)
-- Table settings → Customize → Capacity mode: **On-demand**
+- `dependencies/DB/<name>.json`: one file per Postgres/Redshift database, holding its status, endpoint and credentials. The bucket's default encryption (SSE-S3) encrypts them at rest.
+- `staging/`: Redshift `COPY` files, deleted after each load.
 
-## 4. Staging S3 bucket
+## 4. IAM role
 
-S3 → Create bucket. Name it something like `mockdata-staging-<account-id>`. Keep **Block all public access** on.
-
-## 5. IAM role
-
-One role, `mockdata-role`, used by both the Lambda (to run the app) and Redshift (to read staged files during `COPY`).
+One role, `dq-poc-mock-data-iam`, used by both the Lambda (to run the app) and Redshift (to read staged files during `COPY`).
 
 IAM → Roles → Create role:
 
@@ -72,8 +67,8 @@ IAM → Roles → Create role:
 }
 ```
 
-2. Skip the "Add permissions" page (no AWS managed policies). Name it `mockdata-role` and create it. Copy its ARN.
-3. Open the role → **Add permissions → Create inline policy → JSON**, and paste the policy below. It's the role's only policy and lists every permission explicitly, including CloudWatch Logs and the network interface permissions the Lambda needs to run in your VPC. Replace `<REGION>`, `<ACCOUNT>`, `<META_TABLE>`, `<STAGING_BUCKET>` and `<ROLE_ARN>` (this role's own ARN: when an admin creates a Redshift database, the app hands this role to Redshift, so it must be allowed to pass itself).
+2. Skip the "Add permissions" page (no AWS managed policies). Name it `dq-poc-mock-data-iam` and create it. Copy its ARN.
+3. Open the role → **Add permissions → Create inline policy → JSON**, and paste the policy below. It's the role's only policy and lists every permission explicitly, including CloudWatch Logs and the network interface permissions the Lambda needs to run in your VPC. Replace `<ACCOUNT>` with your 12-digit account ID; everything else is already filled in for this deployment. The `iam:PassRole` statement points at this role's own ARN: when someone creates a Redshift database, the app hands this role to Redshift, so it must be allowed to pass itself.
 
 ```json
 {
@@ -87,7 +82,7 @@ IAM → Roles → Create role:
         "logs:CreateLogStream",
         "logs:PutLogEvents"
       ],
-      "Resource": "arn:aws:logs:<REGION>:<ACCOUNT>:*"
+      "Resource": "arn:aws:logs:us-east-1:<ACCOUNT>:*"
     },
     {
       "Sid": "LambdaVpcNetworking",
@@ -103,16 +98,6 @@ IAM → Roles → Create role:
     {
       "Effect": "Allow",
       "Action": [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:Scan"
-      ],
-      "Resource": "arn:aws:dynamodb:<REGION>:<ACCOUNT>:table/<META_TABLE>"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
         "dynamodb:CreateTable",
         "dynamodb:DeleteTable",
         "dynamodb:DescribeTable",
@@ -120,7 +105,7 @@ IAM → Roles → Create role:
         "dynamodb:PutItem",
         "dynamodb:Scan"
       ],
-      "Resource": "arn:aws:dynamodb:<REGION>:<ACCOUNT>:table/mockgen-*"
+      "Resource": "arn:aws:dynamodb:us-east-1:<ACCOUNT>:table/mockgen-*"
     },
     {
       "Effect": "Allow",
@@ -156,16 +141,17 @@ IAM → Roles → Create role:
         "s3:DeleteObject"
       ],
       "Resource": [
-        "arn:aws:s3:::<STAGING_BUCKET>",
-        "arn:aws:s3:::<STAGING_BUCKET>/*"
+        "arn:aws:s3:::vgi-cdao-data-quality-poc",
+        "arn:aws:s3:::vgi-cdao-data-quality-poc/dependencies/*",
+        "arn:aws:s3:::vgi-cdao-data-quality-poc/staging/*"
       ]
     },
     {
       "Effect": "Allow",
       "Action": "glue:GetDatabases",
       "Resource": [
-        "arn:aws:glue:<REGION>:<ACCOUNT>:catalog",
-        "arn:aws:glue:<REGION>:<ACCOUNT>:database/*"
+        "arn:aws:glue:us-east-1:<ACCOUNT>:catalog",
+        "arn:aws:glue:us-east-1:<ACCOUNT>:database/*"
       ]
     },
     {
@@ -179,9 +165,9 @@ IAM → Roles → Create role:
         "glue:DeleteTable"
       ],
       "Resource": [
-        "arn:aws:glue:<REGION>:<ACCOUNT>:catalog",
-        "arn:aws:glue:<REGION>:<ACCOUNT>:database/mockgen_*",
-        "arn:aws:glue:<REGION>:<ACCOUNT>:table/mockgen_*/*"
+        "arn:aws:glue:us-east-1:<ACCOUNT>:catalog",
+        "arn:aws:glue:us-east-1:<ACCOUNT>:database/mockgen_*",
+        "arn:aws:glue:us-east-1:<ACCOUNT>:table/mockgen_*/*"
       ]
     },
     {
@@ -224,7 +210,7 @@ IAM → Roles → Create role:
     {
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "<ROLE_ARN>"
+      "Resource": "arn:aws:iam::<ACCOUNT>:role/dq-poc-mock-data-iam"
     },
     {
       "Effect": "Allow",
@@ -249,46 +235,53 @@ IAM → Roles → Create role:
 }
 ```
 
-## 6. Lambda function
+## 5. Lambda function
 
 Lambda → Create function → Author from scratch:
 
-1. Name: `mockdata-app`. Runtime **Python 3.13**, architecture **x86_64**. Permissions: **Use an existing role** → `mockdata-role`.
-2. **Code → Upload from → Amazon S3 location**: paste the S3 URL of `lambda-mock-gen.zip`.
+1. Name: `dq-poc-mock-data-app`. Runtime **Python 3.13**, architecture **x86_64**. Permissions: **Use an existing role** → `dq-poc-mock-data-iam`.
+2. Click **Create function**. Then on the **Code** tab: **Upload from → Amazon S3 location**, and paste the zip's Object URL, e.g. `https://<code-bucket>.s3.us-east-1.amazonaws.com/dependencies/lambda-mock-gen.zip`. Replacing the file in S3 later doesn't update the function; upload it here again.
 3. **Runtime settings → Edit**: Handler `app.handler`.
 4. **Configuration → General configuration**: Memory **2048 MB**, Timeout **15 min 0 sec**.
-5. **Configuration → VPC**: your VPC, the 3 private subnets, security group `mockdata-lambda`.
+
+Each settings page has its own **Save**; changes are lost if you leave the page without it.
+5. **Configuration → VPC**: your VPC, the 3 private subnets, security group `dq-poc-mock-data-lambda`.
 6. **Configuration → Environment variables**:
 
 | Key | Value |
 |---|---|
-| `META_TABLE` | `mockdata-meta` |
-| `STAGING_BUCKET` | your staging bucket name |
-| `BUCKET_PREFIX` | `mockgen-<account-id>-` (keep the trailing dash) |
-| `DB_SUBNET_GROUP` | `mockdata-db-subnets` |
-| `DB_SECURITY_GROUP` | the **ID** of `mockdata-db` (`sg-…`) |
+| `APP_BUCKET` | `vgi-cdao-data-quality-poc` |
+| `BUCKET_PREFIX` | `mockgen-<ACCOUNT>-` (keep the trailing dash) |
+| `DB_SUBNET_GROUP` | `dq-poc-mock-data-subnets` |
+| `DB_SECURITY_GROUP` | the **ID** of `dq-poc-mock-data-db` (`sg-…`) |
 | `SUBNET_IDS` | `subnet-a,subnet-b,subnet-c` (comma-separated, no spaces) |
-| `REDSHIFT_ROLE_ARN` | ARN of `mockdata-role` |
-| `SECURE_COOKIE` | `false` (`true` if you use HTTPS) |
+| `REDSHIFT_ROLE_ARN` | `arn:aws:iam::<ACCOUNT>:role/dq-poc-mock-data-iam` |
 | `MOCKGEN_LOCAL` | `false` |
 
-## 7. Target group
+## 6. Target group
 
 EC2 → Target groups → Create:
 
 - Target type: **Lambda function**
-- Name: `mockdata-tg`
-- Function: `mockdata-app`. The console grants the load balancer permission to invoke it automatically.
+- Name: `dq-poc-mock-data-tg`
+- Function: `dq-poc-mock-data-app`. The console grants the load balancer permission to invoke it automatically.
 
-## 8. Load balancer
+## 7. Load balancer
 
 EC2 → Load balancers → Create → **Application Load Balancer**:
 
-1. Name: `mockdata-alb`. Scheme **Internal**, IP type **IPv4**.
-2. Your VPC and the same 3 subnets. Security group: `mockdata-alb` (remove the default group).
-3. Listener: **HTTP 80**, forwarding to `mockdata-tg`. For HTTPS, use **443** with your ACM certificate instead.
+1. Name: `dq-poc-mock-data-alb`. Scheme **Internal**, IP type **IPv4**.
+2. Your VPC and the same 3 subnets. Security group: `dq-poc-mock-data-alb` (remove the default group).
+3. Listener: **HTTP 80**, forwarding to `dq-poc-mock-data-tg`. For HTTPS, use **443** with your ACM certificate instead.
 4. After creation: **Attributes → Edit → Connection idle timeout = 900 seconds**, so long generations aren't cut off.
 
-## 9. Open it
+## 8. Open it
 
-Browse to `http://<load balancer DNS name>` from inside your network. The first visit asks you to create the admin account.
+Browse to `http://<load balancer DNS name>` (`http`, not `https`, unless you set up a certificate) from inside your network. There are no accounts; the app opens straight into the generator.
+
+If it fails, check the function's logs (Lambda → Monitor → View CloudWatch logs):
+
+- `No module named 'lambda_function'`: the handler isn't `app.handler`.
+- `No module named 'pyarrow.lib'`: the runtime isn't Python 3.13 or the architecture isn't x86_64.
+- `KeyError: 'SOME_NAME'`: that environment variable is missing.
+- A timeout with no logs at all: the request isn't reaching the load balancer. Check the `dq-poc-mock-data-alb` inbound rule allows your address.

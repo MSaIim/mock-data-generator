@@ -49,7 +49,7 @@ def missing_ok(call, not_found_code: str, **kwargs):
         return None
 
 
-# Load a database record from the metadata table
+# Load a database record from the metadata store
 def get_record(name: str) -> dict:
     """
     Load a database record.
@@ -75,14 +75,13 @@ def public(record: dict) -> dict:
         record (dict): database record
 
     Returns:
-        dict: name, engine, status, error and creator
+        dict: name, engine, status and error
     """
     return {
         "name": record["name"],
         "engine": record["engine"],
         "status": record["status"],
         "error": record.get("error", ""),
-        "created_by": record.get("created_by", ""),
     }
 
 
@@ -94,7 +93,7 @@ def public(record: dict) -> dict:
 # List every registered database
 def list_databases() -> list:
     """
-    List all databases in the metadata table.
+    List all databases in the metadata store.
 
     Returns:
         list: public database records, sorted by name
@@ -105,7 +104,7 @@ def list_databases() -> list:
 
 
 # Start creating a Postgres or Redshift database
-def create_database(name: str, engine: str, created_by: str) -> dict:
+def create_database(name: str, engine: str) -> dict:
     """
     Register the database and start creating it. Creation takes several minutes;
     refresh_database reports when it's ready.
@@ -113,7 +112,6 @@ def create_database(name: str, engine: str, created_by: str) -> dict:
     Arguments:
         name (str): validated database name
         engine (str): postgres or redshift
-        created_by (str): admin username
 
     Returns:
         dict: public record
@@ -132,7 +130,6 @@ def create_database(name: str, engine: str, created_by: str) -> dict:
         "username": DB_USER,
         "password": password,
         "status": "creating",
-        "created_by": created_by,
         "created_at": int(time.time()),
     }
     if not meta.put_new(record):

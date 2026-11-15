@@ -6,13 +6,11 @@ from http import HTTPStatus
 
 from data import formats
 from data.generator import TYPES, generate_rows
-from store import auth
 
 # =================================================
 # CONFIG
 # =================================================
 
-SECURE_COOKIE = os.environ["SECURE_COOKIE"] == "true"
 LOCAL = os.environ["MOCKGEN_LOCAL"] == "true"
 
 # Local mode swaps in SQLite stand-ins with the same functions, so AWS code is never imported
@@ -32,7 +30,6 @@ else:
 
 SOURCES = ("postgres", "redshift", "dynamodb", "s3", "glue")
 SQL_SOURCES = ("postgres", "redshift")
-ADMIN_ACTIONS = ("databases", "create_database", "refresh_database", "delete_database", "users", "create_user", "delete_user")
 
 TABLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,30}$")
@@ -59,7 +56,7 @@ for _name in os.listdir(UI_DIR):
 
 
 # Build an ALB response
-def response(status: int, body, content_type: str = "application/json", cookie: str = None) -> dict:
+def response(status: int, body, content_type: str = "application/json") -> dict:
     """
     Build a response in the format the ALB expects from a Lambda target.
 
@@ -67,14 +64,11 @@ def response(status: int, body, content_type: str = "application/json", cookie: 
         status (int): HTTP status code
         body: str for static files, anything JSON-serializable otherwise
         content_type (str): Content-Type header
-        cookie (str): optional Set-Cookie value
 
     Returns:
         dict: ALB Lambda response
     """
     headers = {"Content-Type": content_type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"}
-    if cookie:
-        headers["Set-Cookie"] = cookie
     text = body if isinstance(body, str) else json.dumps(body, default=str)
     return {
         "statusCode": status,
@@ -83,24 +77,6 @@ def response(status: int, body, content_type: str = "application/json", cookie: 
         "headers": headers,
         "body": text,
     }
-
-
-# Build the session cookie header value
-def session_cookie(token: str, max_age: int) -> str:
-    """
-    Build a Set-Cookie value for the session.
-
-    Arguments:
-        token (str): session token ("" to clear)
-        max_age (int): lifetime in seconds (0 to clear)
-
-    Returns:
-        str: Set-Cookie value
-    """
-    cookie = f"{auth.COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
-    if SECURE_COOKIE:
-        cookie += "; Secure"
-    return cookie
 
 
 # =================================================
@@ -250,23 +226,21 @@ def check_destination(body: dict, need_table: bool, need_format: bool) -> dict:
 # =================================================
 
 
-# Run one API action for a logged-in user
-def run_action(action: str, body: dict, username: str, role: str):
+# Run one API action (no accounts: everyone can do everything)
+def run_action(action: str, body: dict):
     """
-    Dispatch an API action. Admin-only actions are already role-checked by the handler.
+    Dispatch an API action.
 
     Arguments:
         action (str): action name
         body (dict): request body
-        username (str): logged-in user
-        role (str): their role
 
     Returns:
         JSON-serializable result
     """
-    # Session info
-    if action == "me":
-        return {"username": username, "role": role, "local": LOCAL}
+    # App info for the UI
+    if action == "info":
+        return {"local": LOCAL}
 
     # What users can pick from: ready databases, buckets, Glue databases, column types and formats
     if action == "sources":
@@ -342,28 +316,18 @@ def run_action(action: str, body: dict, username: str, role: str):
         writers.delete_bucket(check_name(body.get("bucket"), BUCKET_RE, "bucket name"))
         return {"ok": True}
 
-    # Admin: databases
+    # Databases (Postgres / Redshift servers)
     if action == "databases":
         return {"databases": databases.list_databases()}
     if action == "create_database":
         engine = body.get("engine")
         if engine not in databases.ENGINES:
             raise ValueError("Engine must be postgres or redshift")
-        return databases.create_database(check_name(body.get("name"), DATABASE_RE, "database name"), engine, username)
+        return databases.create_database(check_name(body.get("name"), DATABASE_RE, "database name"), engine)
     if action == "refresh_database":
         return databases.refresh_database(check_name(body.get("name"), DATABASE_RE, "database name"))
     if action == "delete_database":
         return databases.delete_database(check_name(body.get("name"), DATABASE_RE, "database name"))
-
-    # Admin: users
-    if action == "users":
-        return {"users": auth.list_users()}
-    if action == "create_user":
-        auth.create_user(body.get("username"), body.get("password"), body.get("role"))
-        return {"ok": True}
-    if action == "delete_user":
-        auth.delete_user(body.get("username"), username)
-        return {"ok": True}
 
     raise ValueError("Unknown action")
 
@@ -406,38 +370,9 @@ def handler(event: dict, context) -> dict:
     if not isinstance(body, dict):
         return response(400, {"error": "Body must be a JSON object"})
     action = body.get("action")
-    headers = event.get("headers") or {}
 
     try:
-        # First-run setup, login and logout work without a session
-        if action == "status":
-            return response(200, {"setup_needed": auth.setup_needed(), "local": LOCAL})
-        if action == "setup":
-            username = body.get("username")
-            auth.setup(username, body.get("password"))
-            cookie = session_cookie(auth.make_session(username), auth.SESSION_SECONDS)
-            return response(200, {"username": username, "role": "admin"}, cookie=cookie)
-        if action == "login":
-            username = body.get("username")
-            password = body.get("password")
-            if not isinstance(username, str) or not isinstance(password, str):
-                return response(400, {"error": "Username and password are required"})
-            role = auth.login(username, password)
-            if role is None:
-                return response(401, {"error": "Wrong username or password"})
-            cookie = session_cookie(auth.make_session(username), auth.SESSION_SECONDS)
-            return response(200, {"username": username, "role": role}, cookie=cookie)
-        if action == "logout":
-            return response(200, {"ok": True}, cookie=session_cookie("", 0))
-
-        # Everything else needs a valid session, and admin actions need the admin role
-        session = auth.read_session(headers.get("cookie"))
-        if session is None:
-            return response(401, {"error": "Not logged in"})
-        username, role = session
-        if action in ADMIN_ACTIONS and role != "admin":
-            return response(403, {"error": "Admins only"})
-        return response(200, run_action(action, body, username, role))
+        return response(200, run_action(action, body))
 
     # Bad input and AWS errors go back to the UI as messages
     except ValueError as e:

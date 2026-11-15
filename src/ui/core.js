@@ -24,7 +24,6 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   datasets: '<path d="M12 3l9 4.5-9 4.5-9-4.5z"/><path d="M3 12l9 4.5 9-4.5"/><path d="M3 16.5L12 21l9-4.5"/>',
   admin: '<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
-  logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 16l-4-4 4-4M6 12h10"/>',
   refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.6"/><path d="M20 4v4.6h-4.6"/>',
   sparkles:
     '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
@@ -49,8 +48,7 @@ function el(tag, className, text) {
   return node;
 }
 
-// Call the API; throws with the server's error message.
-// A lost session fires a "mockgen:unauthorized" event instead of calling UI code directly
+// Call the API; throws with the server's error message
 async function api(action, data = {}) {
   const res = await fetch("/api", {
     method: "POST",
@@ -58,9 +56,6 @@ async function api(action, data = {}) {
     body: JSON.stringify({ action, ...data }),
   });
   const body = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }));
-  if (res.status === 401 && !["login", "setup", "me"].includes(action)) {
-    document.dispatchEvent(new Event("mockgen:unauthorized"));
-  }
   if (!res.ok) {
     throw new Error(body.error || res.statusText);
   }

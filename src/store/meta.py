@@ -2,8 +2,9 @@ import json
 import os
 
 # =================================================
-# METADATA STORE: DynamoDB in AWS, SQLite when running locally
-# Items are dicts with a "pk" key: USER#<name>, DB#<name>, CONFIG#<name>
+# METADATA STORE: S3 JSON objects in AWS, SQLite when running locally
+# Items are dicts with a "pk" key: DB#<name> (databases), GLUE#<db>#<table> (local Glue catalog)
+# In S3, item DB#<name> is the object dependencies/DB/<name>.json in the app bucket
 # =================================================
 
 LOCAL = os.environ["MOCKGEN_LOCAL"] == "true"
@@ -17,10 +18,25 @@ if LOCAL:
         _con.execute("CREATE TABLE IF NOT EXISTS meta (pk TEXT PRIMARY KEY, item TEXT NOT NULL)")
 else:
     import boto3
-    from boto3.dynamodb.conditions import Attr
     from botocore.exceptions import ClientError
 
-    TABLE = boto3.resource("dynamodb").Table(os.environ["META_TABLE"])
+    s3 = boto3.client("s3")
+    BUCKET = os.environ["APP_BUCKET"]
+    PREFIX = "dependencies/"
+
+
+# S3 object key for an item key (or key prefix)
+def object_key(pk: str) -> str:
+    """
+    Map an item key to its S3 object key, e.g. DB#analytics -> dependencies/DB/analytics.json.
+
+    Arguments:
+        pk (str): item key
+
+    Returns:
+        str: S3 object key
+    """
+    return PREFIX + pk.replace("#", "/") + ".json"
 
 
 # Read one item
@@ -38,7 +54,12 @@ def get(pk: str):
         with closing(sqlite3.connect(DB_PATH)) as con, con:
             row = con.execute("SELECT item FROM meta WHERE pk = ?", (pk,)).fetchone()
         return json.loads(row[0]) if row else None
-    return TABLE.get_item(Key={"pk": pk}, ConsistentRead=True).get("Item")
+    try:
+        return json.loads(s3.get_object(Bucket=BUCKET, Key=object_key(pk))["Body"].read())
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            return None
+        raise
 
 
 # Write an item only if its key doesn't exist yet
@@ -56,11 +77,12 @@ def put_new(item: dict) -> bool:
         with closing(sqlite3.connect(DB_PATH)) as con, con:
             cur = con.execute("INSERT OR IGNORE INTO meta (pk, item) VALUES (?, ?)", (item["pk"], json.dumps(item)))
         return cur.rowcount == 1
+    # S3 conditional write: fails if the object already exists
     try:
-        TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
+        s3.put_object(Bucket=BUCKET, Key=object_key(item["pk"]), Body=json.dumps(item), IfNoneMatch="*")
         return True
     except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        if e.response["Error"]["Code"] == "PreconditionFailed":
             return False
         raise
 
@@ -77,7 +99,7 @@ def put(item: dict) -> None:
         with closing(sqlite3.connect(DB_PATH)) as con, con:
             con.execute("INSERT OR REPLACE INTO meta (pk, item) VALUES (?, ?)", (item["pk"], json.dumps(item)))
         return
-    TABLE.put_item(Item=item)
+    s3.put_object(Bucket=BUCKET, Key=object_key(item["pk"]), Body=json.dumps(item))
 
 
 # Delete an item
@@ -92,7 +114,7 @@ def delete(pk: str) -> None:
         with closing(sqlite3.connect(DB_PATH)) as con, con:
             con.execute("DELETE FROM meta WHERE pk = ?", (pk,))
         return
-    TABLE.delete_item(Key={"pk": pk})
+    s3.delete_object(Bucket=BUCKET, Key=object_key(pk))
 
 
 # List all items whose key starts with a prefix
@@ -101,7 +123,7 @@ def scan(prefix: str) -> list:
     List items by key prefix.
 
     Arguments:
-        prefix (str): key prefix, e.g. "USER#"
+        prefix (str): key prefix, e.g. "DB#"
 
     Returns:
         list: matching items
@@ -111,13 +133,11 @@ def scan(prefix: str) -> list:
             rows = con.execute("SELECT item FROM meta WHERE substr(pk, 1, ?) = ? ORDER BY pk", (len(prefix), prefix)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    # List the objects under the prefix (without the .json suffix), then read each one
     items = []
-    kwargs = {"FilterExpression": Attr("pk").begins_with(prefix)}
-    while True:
-        resp = TABLE.scan(**kwargs)
-        items.extend(resp["Items"])
-        if "LastEvaluatedKey" not in resp:
-            break
-        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    key_prefix = PREFIX + prefix.replace("#", "/")
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=key_prefix):
+        for obj in page.get("Contents", []):
+            items.append(json.loads(s3.get_object(Bucket=BUCKET, Key=obj["Key"])["Body"].read()))
 
     return items

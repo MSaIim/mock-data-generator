@@ -54,7 +54,6 @@ const AUTO_NAMES = {
 // =================================================
 
 const state = {
-  me: null,
   step: 1,
   source: null,
   sources: { databases: [], buckets: [], glue_databases: [], types: [], formats: [] },
@@ -129,53 +128,15 @@ function toggleTheme() {
 }
 
 // =================================================
-// LOGIN AND VIEWS
+// STARTUP AND VIEWS (no accounts: everyone can do everything)
 // =================================================
 
-let setupMode = false;
-
-// Show sign-in, or one-time admin setup on first run
-async function showLogin() {
-  for (const id of ["wizard-view", "admin-view", "stepper", "footbar", "datasets-btn", "admin-btn", "logout-btn"]) {
-    $(id).hidden = true;
-  }
-  closeDatasets();
-  $("whoami").textContent = "";
-  $("login-view").hidden = false;
-  try {
-    const status = await api("status");
-    setupMode = status.setup_needed;
-    $("local-badge").hidden = !status.local;
-  } catch (e) {
-    $("login-error").textContent = e.message;
-  }
-  $("login-title").textContent = setupMode ? "Create admin account" : "Sign in";
-  $("login-btn").textContent = setupMode ? "Create admin" : "Sign in";
-  $("setup-hint").hidden = !setupMode;
-}
-
-async function submitLogin(event) {
-  event.preventDefault();
-  $("login-error").textContent = "";
-  try {
-    const me = await api(setupMode ? "setup" : "login", { username: $("login-user").value.trim(), password: $("login-pass").value });
-    $("login-pass").value = "";
-    showApp(me);
-  } catch (e) {
-    $("login-error").textContent = e.message;
-  }
-}
-
-async function showApp(me) {
-  state.me = me;
-  $("login-view").hidden = true;
-  $("logout-btn").hidden = false;
+// Load the app straight into the generator
+async function start() {
+  const info = await api("info");
+  $("local-badge").hidden = !info.local;
   $("datasets-btn").hidden = false;
-  $("admin-btn").hidden = me.role !== "admin";
-  $("whoami").textContent = me.username;
-  if (me.local !== undefined) {
-    $("local-badge").hidden = !me.local;
-  }
+  $("admin-btn").hidden = false;
   await loadSources();
   renderSourceCards();
   renderFormatButtons();
@@ -194,7 +155,7 @@ function showView(view) {
   $("admin-view").hidden = wizard;
   $("admin-btn").querySelector(".label").textContent = wizard ? "Admin" : "Generator";
   if (!wizard) {
-    openAdmin(state.me.username);
+    openAdmin();
     return;
   }
   // Coming back from admin: databases may have become ready or been deleted
@@ -1010,17 +971,11 @@ function newDataset() {
 // Static icons
 $("datasets-btn").querySelector(".btn-icon").innerHTML = icon("datasets");
 $("admin-btn").querySelector(".btn-icon").innerHTML = icon("admin");
-$("logout-btn").querySelector(".btn-icon").innerHTML = icon("logout");
 $("foot-back").querySelector(".btn-icon").innerHTML = icon("back");
 $("auto-cols-btn").querySelector(".btn-icon").innerHTML = icon("sparkles");
 
 // Header
 $("theme-btn").onclick = toggleTheme;
-$("login-form").onsubmit = submitLogin;
-$("logout-btn").onclick = async () => {
-  await api("logout");
-  showLogin();
-};
 $("datasets-btn").onclick = openDatasets;
 $("admin-btn").onclick = () => showView($("admin-view").hidden ? "admin" : "wizard");
 $("back-btn").onclick = () => showView("wizard");
@@ -1063,10 +1018,10 @@ $("batch-size").oninput = () => {
   renderGenerate();
 };
 
-document.addEventListener("mockgen:unauthorized", showLogin);
 document.addEventListener("mockgen:datasets-changed", onDatasetsChanged);
 
 renderThemeButton();
-api("me")
-  .then(showApp)
-  .catch(() => showLogin());
+start().catch((e) => {
+  state.footError = `Couldn't load the app: ${e.message}`;
+  renderFooter();
+});

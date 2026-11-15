@@ -18,7 +18,9 @@ from data.generator import TYPES
 # =================================================
 
 REGION = os.environ["AWS_REGION"]
-STAGING_BUCKET = os.environ["STAGING_BUCKET"]
+APP_BUCKET = os.environ["APP_BUCKET"]
+# Everything the app stages goes under this prefix, so the app bucket can be shared
+STAGING_PREFIX = "staging/"
 BUCKET_PREFIX = os.environ["BUCKET_PREFIX"]
 REDSHIFT_ROLE_ARN = os.environ["REDSHIFT_ROLE_ARN"]
 DYNAMO_PREFIX = "mockgen-"
@@ -371,18 +373,18 @@ def write(dest: dict, columns: list, batches) -> dict:
 
     # Redshift: stage one JSON file per batch, then replace the table and COPY them all in one transaction
     if source == "redshift":
-        staging = f"redshift/{uuid.uuid4()}/"
+        staging = f"{STAGING_PREFIX}redshift/{uuid.uuid4()}/"
         try:
             for i, rows in enumerate(batches):
                 body = "\n".join(json.dumps(row) for row in rows)
-                s3.put_object(Bucket=STAGING_BUCKET, Key=f"{staging}part-{i:05d}.json", Body=body.encode("utf-8"))
+                s3.put_object(Bucket=APP_BUCKET, Key=f"{staging}part-{i:05d}.json", Body=body.encode("utf-8"))
             copy = (
-                f'COPY "{dest["schema"]}"."{dest["table"]}" FROM \'s3://{STAGING_BUCKET}/{staging}\' '
+                f'COPY "{dest["schema"]}"."{dest["table"]}" FROM \'s3://{APP_BUCKET}/{staging}\' '
                 f"IAM_ROLE '{REDSHIFT_ROLE_ARN}' FORMAT AS JSON 'auto' DATEFORMAT 'auto' TIMEFORMAT 'auto'"
             )
             rs_exec(dest["db"], recreate_sql(dest, columns) + [copy])
         finally:
-            delete_prefix(STAGING_BUCKET, staging)
+            delete_prefix(APP_BUCKET, staging)
         return {"table": f"{dest['schema']}.{dest['table']}"}
 
     # DynamoDB: recreate the table, then write each batch. Every item gets a uuid "pk"

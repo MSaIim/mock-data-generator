@@ -1,17 +1,12 @@
 "use strict";
 
 // =================================================
-// ADMIN PAGE: DATABASES AND USERS (depends only on core.js)
+// ADMIN PAGE: POSTGRES / REDSHIFT DATABASES (depends only on core.js)
 // =================================================
 
-// The signed-in admin, so they can't delete themselves
-let adminUsername = "";
-
-// Load both admin lists
-function openAdmin(username) {
-  adminUsername = username;
+// Load the admin page
+function openAdmin() {
   loadDatabases();
-  loadUsers();
 }
 
 // Build a table row with text cells and action buttons
@@ -38,7 +33,7 @@ async function loadDatabases() {
       const status = db.error ? `${db.status}: ${db.error}` : db.status;
       $("databases").appendChild(
         tableRow(
-          [db.name, db.engine, status, db.created_by],
+          [db.name, db.engine, status],
           [
             ["Refresh", "secondary", () => refreshDatabase(db.name)],
             ["Delete", "danger", () => deleteDatabase(db.name)],
@@ -98,46 +93,4 @@ async function deleteDatabase(name) {
   }
 }
 
-async function loadUsers() {
-  try {
-    const res = await api("users");
-    $("users").replaceChildren();
-    for (const user of res.users) {
-      const buttons = user.username === adminUsername ? [] : [["Delete", "danger", () => deleteUser(user.username)]];
-      $("users").appendChild(tableRow([user.username, user.role], buttons));
-    }
-  } catch (e) {
-    $("user-status").textContent = e.message;
-  }
-}
-
-async function createUser() {
-  try {
-    await api("create_user", {
-      username: $("new-user").value.trim(),
-      password: $("new-pass").value,
-      role: $("new-role").value,
-    });
-    $("user-status").textContent = "User added.";
-    $("new-user").value = "";
-    $("new-pass").value = "";
-    loadUsers();
-  } catch (e) {
-    $("user-status").textContent = e.message;
-  }
-}
-
-async function deleteUser(username) {
-  if (!confirm(`Delete user ${username}?`)) {
-    return;
-  }
-  try {
-    await api("delete_user", { username });
-    loadUsers();
-  } catch (e) {
-    $("user-status").textContent = e.message;
-  }
-}
-
 $("create-db-btn").onclick = createDatabase;
-$("create-user-btn").onclick = createUser;

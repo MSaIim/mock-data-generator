@@ -49,25 +49,9 @@
             <span class="btn-icon"></span><span class="label">Datasets</span>
           </button>
           <button class="btn ghost" id="admin-btn" title="Admin" hidden><span class="btn-icon"></span><span class="label">Admin</span></button>
-          <span class="user" id="whoami"></span>
-          <button class="btn ghost" id="logout-btn" title="Sign out" hidden><span class="btn-icon"></span><span class="label">Sign out</span></button>
         </div>
       </div>
     </header>
-
-    <!-- ================= LOGIN ================= -->
-    <div id="login-view" class="center" hidden>
-      <form class="card login-card" id="login-form">
-        <div>
-          <h2 id="login-title">Sign in</h2>
-          <p class="sub" id="setup-hint" hidden>First run: create the admin account. This can only be done once.</p>
-        </div>
-        <div class="field"><label for="login-user">Username</label><input id="login-user" autocomplete="username" /></div>
-        <div class="field"><label for="login-pass">Password</label><input id="login-pass" type="password" autocomplete="current-password" /></div>
-        <button class="btn primary" id="login-btn" type="submit">Sign in</button>
-        <p class="error-text" id="login-error"></p>
-      </form>
-    </div>
 
     <!-- ================= WIZARD ================= -->
     <div id="wizard-view" class="layout" hidden>
@@ -250,7 +234,6 @@
                 <th>Name</th>
                 <th>Engine</th>
                 <th>Status</th>
-                <th>Created by</th>
                 <th></th>
               </tr>
             </thead>
@@ -260,34 +243,6 @@
         <dl class="kv" id="db-info" hidden></dl>
       </section>
 
-      <section class="card page">
-        <h2>Users</h2>
-        <div class="toolbar">
-          <div class="field grow"><label for="new-user">Username</label><input id="new-user" autocomplete="off" /></div>
-          <div class="field grow"><label for="new-pass">Password</label><input id="new-pass" type="password" autocomplete="new-password" /></div>
-          <div class="field grow">
-            <label for="new-role">Role</label>
-            <select id="new-role">
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          <button class="btn primary" id="create-user-btn">Add user</button>
-        </div>
-        <p class="help" id="user-status"></p>
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Username</th>
-                <th>Role</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="users"></tbody>
-          </table>
-        </div>
-      </section>
     </div>
 
     <!-- ================= DATASETS MODAL ================= -->

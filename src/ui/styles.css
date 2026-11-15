@@ -407,16 +407,6 @@ label {
   min-width: 0;
 }
 
-.user {
-  color: var(--muted);
-  font-size: 13px;
-  padding: 0 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 120px;
-}
-
 /* Every step is the same width, so the track runs exactly from the first dot's center to the last's */
 .stepper {
   grid-column: 2;
@@ -578,14 +568,6 @@ label {
   align-items: flex-start;
   gap: 16px;
   flex-wrap: wrap;
-}
-
-.center {
-  width: 100%;
-  flex: 1 0 auto;
-  display: grid;
-  place-items: center;
-  padding: 24px 16px;
 }
 
 /* =================================================
@@ -1096,15 +1078,8 @@ label {
 }
 
 /* =================================================
-   LOGIN AND ADMIN
+   ADMIN
    ================================================= */
-
-.login-card {
-  width: 100%;
-  max-width: 380px;
-  display: grid;
-  gap: 14px;
-}
 
 .admin {
   width: 100%;
@@ -1329,12 +1304,6 @@ label {
    ================================================= */
 
 /* The header shrinks in stages so its three columns never overlap */
-@media (max-width: 1440px) {
-  .user {
-    display: none;
-  }
-}
-
 @media (max-width: 1180px) {
   .top-actions .label {
     display: none;

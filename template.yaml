@@ -1,11 +1,16 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Mock data generator - private web UI on Lambda behind an internal ALB
+Description: Mock data generator - private web UI on Lambda behind an internal ALB (no accounts, for sandboxed AWS accounts)
 
 # =================================================
 # PARAMETERS
 # =================================================
 
 Parameters:
+  NamePrefix:
+    Type: String
+    Default: dq-poc-mock-data
+    AllowedPattern: "^[a-z][a-z0-9-]{2,23}$"
+    Description: Prefix for every resource name (lowercase, max 24 characters). Must not start with "mockgen-", which the app reserves for user datasets
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC to deploy into
@@ -14,14 +19,21 @@ Parameters:
     Description: Private subnets with a route to a NAT gateway, in 3 different AZs (Redshift Serverless needs 3)
   AllowedCidr:
     Type: String
-    Description: Network range allowed to open the UI and connect to the databases (e.g. your VPN or office range)
+    Description: Network range users connect from (e.g. your VPC range if users come through AWS Client VPN or a host in the VPC)
+  AllowedCidr2:
+    Type: String
+    Default: ""
+    Description: Optional second range, e.g. your VPN's client pool (the address ipconfig shows while on the VPN)
   CodeBucket:
     Type: String
-    Description: S3 bucket where you uploaded lambda-mock-gen.zip
+    Description: S3 bucket where you uploaded lambda-mock-gen.zip (same region as the stack)
   CodeKey:
     Type: String
     Default: lambda-mock-gen.zip
     Description: S3 key of the code zip
+  AppBucket:
+    Type: String
+    Description: Existing S3 bucket for the app's own files - the database registry under dependencies/ and temporary Redshift COPY files under staging/
   CertificateArn:
     Type: String
     Default: ""
@@ -30,6 +42,7 @@ Parameters:
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
   NoCertificate: !Equals [!Ref CertificateArn, ""]
+  HasSecondCidr: !Not [!Equals [!Ref AllowedCidr2, ""]]
 
 Resources:
   # =================================================
@@ -39,6 +52,7 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "${NamePrefix}-alb"
       GroupDescription: Mock data generator - load balancer
       VpcId: !Ref VpcId
       SecurityGroupIngress:
@@ -46,16 +60,27 @@ Resources:
           FromPort: !If [HasCertificate, 443, 80]
           ToPort: !If [HasCertificate, 443, 80]
           CidrIp: !Ref AllowedCidr
+        - !If
+          - HasSecondCidr
+          - IpProtocol: tcp
+            FromPort: !If [HasCertificate, 443, 80]
+            ToPort: !If [HasCertificate, 443, 80]
+            CidrIp: !Ref AllowedCidr2
+          - !Ref AWS::NoValue
 
+  # No inbound rules: the load balancer invokes the Lambda through AWS, not over the network.
+  # Default outbound (all traffic) is required to reach AWS APIs through the NAT gateway and Postgres.
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "${NamePrefix}-lambda"
       GroupDescription: Mock data generator - Lambda (outbound only, via NAT)
       VpcId: !Ref VpcId
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "${NamePrefix}-db"
       GroupDescription: Mock data generator - Postgres and Redshift client access
       VpcId: !Ref VpcId
       SecurityGroupIngress:
@@ -64,6 +89,7 @@ Resources:
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref LambdaSecurityGroup
+        # People connecting with SQL clients
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
@@ -72,89 +98,61 @@ Resources:
           FromPort: 5439
           ToPort: 5439
           CidrIp: !Ref AllowedCidr
+        - !If
+          - HasSecondCidr
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            CidrIp: !Ref AllowedCidr2
+          - !Ref AWS::NoValue
+        - !If
+          - HasSecondCidr
+          - IpProtocol: tcp
+            FromPort: 5439
+            ToPort: 5439
+            CidrIp: !Ref AllowedCidr2
+          - !Ref AWS::NoValue
 
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
+      DBSubnetGroupName: !Sub "${NamePrefix}-subnets"
       DBSubnetGroupDescription: Mock data generator - Aurora Postgres
       SubnetIds: !Ref PrivateSubnetIds
 
   # =================================================
-  # STORAGE
+  # IAM: one role for the Lambda and for Redshift COPY, explicit permissions only (no AWS managed policies)
   # =================================================
 
-  # Holds users (hashed passwords), the database registry with credentials, and the session signing key
-  MetaTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: pk
-          AttributeType: S
-      KeySchema:
-        - AttributeName: pk
-          KeyType: HASH
-
-  # Redshift COPY staging
-  StagingBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-
-  # =================================================
-  # IAM
-  # =================================================
-
-  # Lets Redshift read staged files for COPY
-  RedshiftCopyRole:
+  AppRole:
     Type: AWS::IAM::Role
     Properties:
+      # Fixed name so the role's own ARN can be used in its policy (iam:PassRole) without a circular reference
+      RoleName: !Sub "${NamePrefix}-iam"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
               Service:
+                - lambda.amazonaws.com
                 - redshift.amazonaws.com
                 - redshift-serverless.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: read-staging
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: s3:ListBucket
-                Resource: !GetAtt StagingBucket.Arn
-              - Effect: Allow
-                Action: s3:GetObject
-                Resource: !Sub "${StagingBucket.Arn}/*"
-
-  LambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: mockgen
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Users and database registry
-              - Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Scan]
-                Resource: !GetAtt MetaTable.Arn
+              # Lambda basics: logs, and network interfaces to run in the VPC
+              - Sid: LambdaLogs
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Sid: LambdaVpcNetworking
+                Effect: Allow
+                Action: [ec2:CreateNetworkInterface, ec2:DeleteNetworkInterface, ec2:AssignPrivateIpAddresses, ec2:UnassignPrivateIpAddresses]
+                Resource: "*"
               # DynamoDB data sources (mockgen-* only)
               - Effect: Allow
                 Action: [dynamodb:CreateTable, dynamodb:DeleteTable, dynamodb:DescribeTable, dynamodb:BatchWriteItem, dynamodb:PutItem, dynamodb:Scan]
@@ -171,12 +169,13 @@ Resources:
               - Effect: Allow
                 Action: s3:ListAllMyBuckets
                 Resource: "*"
-              # Staging bucket (Redshift COPY files)
+              # App bucket, only under dependencies/ (database registry) and staging/ (Redshift COPY files, read by Redshift with this same role)
               - Effect: Allow
                 Action: [s3:ListBucket, s3:PutObject, s3:GetObject, s3:DeleteObject]
                 Resource:
-                  - !GetAtt StagingBucket.Arn
-                  - !Sub "${StagingBucket.Arn}/*"
+                  - !Sub "arn:aws:s3:::${AppBucket}"
+                  - !Sub "arn:aws:s3:::${AppBucket}/dependencies/*"
+                  - !Sub "arn:aws:s3:::${AppBucket}/staging/*"
               # Glue: list databases (read-only, to find the mockgen_* ones)
               - Effect: Allow
                 Action: glue:GetDatabases
@@ -190,7 +189,7 @@ Resources:
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/mockgen_*"
                   - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/mockgen_*/*"
-              # Admin: create and delete Aurora Postgres clusters
+              # Create and delete Aurora Postgres clusters
               - Effect: Allow
                 Action:
                   - rds:CreateDBCluster
@@ -201,7 +200,7 @@ Resources:
                   - rds:DescribeDBInstances
                   - rds:AddTagsToResource
                 Resource: "*"
-              # Admin: create and delete Redshift Serverless namespaces and workgroups
+              # Create and delete Redshift Serverless namespaces and workgroups
               - Effect: Allow
                 Action:
                   - redshift-serverless:CreateNamespace
@@ -211,15 +210,16 @@ Resources:
                   - redshift-serverless:GetNamespace
                   - redshift-serverless:GetWorkgroup
                   - redshift-serverless:TagResource
-                  # Data API signs in as this Lambda's IAM role (no stored secret)
+                  # Data API signs in as this role (no stored secret)
                   - redshift-serverless:GetCredentials
                 Resource: "*"
               - Effect: Allow
                 Action: [redshift-data:ExecuteStatement, redshift-data:BatchExecuteStatement, redshift-data:DescribeStatement, redshift-data:GetStatementResult]
                 Resource: "*"
+              # The app hands this same role to Redshift when it creates a database
               - Effect: Allow
                 Action: iam:PassRole
-                Resource: !GetAtt RedshiftCopyRole.Arn
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${NamePrefix}-iam"
               # Needed when RDS/Redshift create resources in the VPC for the first time
               - Effect: Allow
                 Action: ec2:Describe*
@@ -241,13 +241,16 @@ Resources:
   AppFunction:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: !Sub "${NamePrefix}-app"
       Description: Mock data generator UI and API
+      # The zip's compiled libraries (pyarrow, fastavro) are built for exactly this runtime and architecture
       Runtime: python3.13
+      Architectures: [x86_64]
       Handler: app.handler
       Code:
         S3Bucket: !Ref CodeBucket
         S3Key: !Ref CodeKey
-      Role: !GetAtt LambdaRole.Arn
+      Role: !GetAtt AppRole.Arn
       MemorySize: 2048
       Timeout: 900
       VpcConfig:
@@ -256,14 +259,12 @@ Resources:
           - !Ref LambdaSecurityGroup
       Environment:
         Variables:
-          META_TABLE: !Ref MetaTable
-          STAGING_BUCKET: !Ref StagingBucket
+          APP_BUCKET: !Ref AppBucket
           BUCKET_PREFIX: !Sub "mockgen-${AWS::AccountId}-"
           DB_SUBNET_GROUP: !Ref DatabaseSubnetGroup
           DB_SECURITY_GROUP: !GetAtt DatabaseSecurityGroup.GroupId
           SUBNET_IDS: !Join [",", !Ref PrivateSubnetIds]
-          REDSHIFT_ROLE_ARN: !GetAtt RedshiftCopyRole.Arn
-          SECURE_COOKIE: !If [HasCertificate, "true", "false"]
+          REDSHIFT_ROLE_ARN: !GetAtt AppRole.Arn
           MOCKGEN_LOCAL: "false"
 
   AppPermission:
@@ -277,6 +278,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     DependsOn: AppPermission
     Properties:
+      Name: !Sub "${NamePrefix}-tg"
       TargetType: lambda
       Targets:
         - Id: !GetAtt AppFunction.Arn
@@ -284,6 +286,7 @@ Resources:
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
+      Name: !Sub "${NamePrefix}-alb"
       Type: application
       Scheme: internal
       Subnets: !Ref PrivateSubnetIds
@@ -327,3 +330,9 @@ Outputs:
   AppUrl:
     Description: Open this from inside the VPC / VPN. With a certificate, point a DNS name from the certificate at the load balancer instead
     Value: !If [HasCertificate, !Sub "https://${LoadBalancer.DNSName}", !Sub "http://${LoadBalancer.DNSName}"]
+  FunctionName:
+    Description: Lambda function. Re-upload lambda-mock-gen.zip here (Code -> Upload from -> Amazon S3 location) after a new build
+    Value: !Ref AppFunction
+  LogGroup:
+    Description: CloudWatch log group with the app's errors
+    Value: !Sub "/aws/lambda/${AppFunction}"
